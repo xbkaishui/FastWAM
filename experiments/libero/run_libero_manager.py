@@ -22,8 +22,13 @@ def create_task_file(output_file: Path, task_suite_names: list[str]) -> Path:
             print(f"\n{suite_name}:")
             print(f"- Number of tasks: {n_tasks}")
             for task_id in range(n_tasks):
+                # hack part
+                if task_id != 8:
+                    continue
                 f.write(f"{suite_name},{task_id}\n")
                 total_tasks += 1
+                
+                
 
     print(f"\nTask list created: {output_file}")
     print(f"Total tasks: {total_tasks}")
@@ -79,8 +84,7 @@ def run_evaluation(
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     env = os.environ.copy()
-    env.update(
-        {
+    update_env =  {
             "CONFIG": task_choice,
             "CKPT": ckpt,
             "NUM_GPUS": str(num_gpus),
@@ -92,6 +96,9 @@ def run_evaluation(
             "EXTRA_ARGS": extra_args,
             "EXP_NAME": os.environ.get("EXP_NAME", ""),
         }
+    print(f'Updating environment with: {update_env}')
+    env.update(
+       update_env
     )
 
     print("\nStarting evaluation (Hydra manager)...")
