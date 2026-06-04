@@ -1,10 +1,10 @@
 train:
   _target_: fastwam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
   dataset_dirs:
-    - ./data/libero_mujoco3.3.2/libero_spatial_no_noops_lerobot
-    - ./data/libero_mujoco3.3.2/libero_object_no_noops_lerobot
-    - ./data/libero_mujoco3.3.2/libero_goal_no_noops_lerobot
-    - ./data/libero_mujoco3.3.2/libero_10_no_noops_lerobot
+    - /root/autodl-fs/datasets/datasets--yuanty--LIBERO-fastwam/libero_spatial_no_noops_lerobot
+    - /root/autodl-fs/datasets/datasets--yuanty--LIBERO-fastwam/libero_object_no_noops_lerobot
+    - /root/autodl-fs/datasets/datasets--yuanty--LIBERO-fastwam/libero_goal_no_noops_lerobot
+    - /root/autodl-fs/datasets/datasets--yuanty--LIBERO-fastwam/libero_10_no_noops_lerobot
   shape_meta:
     images:
       - key: image
@@ -34,6 +34,7 @@ train:
   is_training_set: true
   skip_padding_as_possible: false
   concat_multi_camera: "horizontal"
+  pretrained_norm_stats: /root/foresee/FastWAM/configs/libero_uncond_2cam224_dataset_stats.json
   processor:
     _target_: fastwam.datasets.lerobot.processors.fastwam_processor.FastWAMProcessor
     shape_meta: ${data.train.shape_meta}
@@ -63,5 +64,5 @@ train:
       - _target_: fastwam.datasets.lerobot.transforms.image.ToTensor
       - _target_: torchvision.transforms.Resize
         size: [224, 224]
-  text_embedding_cache_dir: ./data/text_embeds_cache/libero
+  text_embedding_cache_dir: /root/autodl-fs/ckpts/fast_wam/text_embeds_cache/libero
   context_len: 128

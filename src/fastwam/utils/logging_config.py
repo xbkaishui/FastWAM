@@ -77,7 +77,7 @@ def setup_logging(
         
         # Configure Formatter
         default_formatter_kwargs = {
-            "fmt": "| >> %(message)s",
+            "fmt": "| %(filename)s:%(lineno)d >> %(message)s",
             "datefmt": "%m/%d [%H:%M:%S]",
         }
         if formatter_kwargs:

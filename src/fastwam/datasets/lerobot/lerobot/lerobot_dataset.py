@@ -500,8 +500,13 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.episode_data_index = get_episode_data_index(self.meta.episodes, self.episodes)
 
         # Check timestamps
-        timestamps = torch.stack(self.hf_dataset["timestamp"]).numpy()
-        episode_indices = torch.stack(self.hf_dataset["episode_index"]).numpy()
+        # timestamps = torch.stack(self.hf_dataset["timestamp"]).numpy()
+        # episode_indices = torch.stack(self.hf_dataset["episode_index"]).numpy()
+        
+        _raw = self.hf_dataset.with_format(None)
+        timestamps = torch.tensor(_raw["timestamp"]).numpy().flatten()
+        episode_indices = torch.tensor(_raw["episode_index"]).numpy().flatten()
+        
         ep_data_index_np = {k: t.numpy() for k, t in self.episode_data_index.items()}
         # check_timestamps_sync(timestamps, episode_indices, ep_data_index_np, self.fps, self.tolerance_s)
 
@@ -680,36 +685,45 @@ class LeRobotDataset(torch.utils.data.Dataset):
         query_timestamps = {}
         for key in self.meta.video_keys:
             if query_indices is not None and key in query_indices:
-                timestamps = self.hf_dataset.select(query_indices[key])["timestamp"]
-                query_timestamps[key] = torch.stack(timestamps).tolist()
+                selected = self.hf_dataset.select(query_indices[key])
+                batch = selected[:]  # slice access triggers transform, avoids Column object
+                timestamps = batch["timestamp"]
+                query_timestamps[key] = (
+                    timestamps.tolist()
+                    if isinstance(timestamps, torch.Tensor)
+                    else [t.item() if isinstance(t, torch.Tensor) else float(t) for t in timestamps]
+                )
             else:
                 query_timestamps[key] = [current_ts]
 
         return query_timestamps
 
     def _query_hf_dataset(self, query_indices: dict[str, list[int]]) -> dict:
-        return {
-            key: torch.stack(self.hf_dataset.select(q_idx)[key])
-            for key, q_idx in query_indices.items()
-            if key not in self.meta.video_keys
-        }
+        result = {}
+        for key, q_idx in query_indices.items():
+            if key not in self.meta.video_keys:
+                selected = self.hf_dataset.select(q_idx)
+                batch = selected[:]  # slice access triggers transform, avoids Column object
+                val = batch[key]
+                result[key] = torch.stack(val) if isinstance(val, list) else val
+        return result
 
     def _query_hf_dataset_fast(self, query_indices: dict[str, list[int]]) -> dict:
         result = {}
         processed_indices = set()
-        index_to_selected = {}
+        index_to_batch = {}
         for key, q_idx in query_indices.items():
-            if key not in self.meta.video_keys :
+            if key not in self.meta.video_keys:
                 if 'images' in key and not self.during_training:
                     continue
                 q_idx_tuple = tuple(q_idx)
                 if q_idx_tuple not in processed_indices:
                     selected_data = self.hf_dataset.select(q_idx)
-                    index_to_selected[q_idx_tuple] = selected_data
+                    index_to_batch[q_idx_tuple] = selected_data[:]  # slice access triggers transform, avoids Column object
                     processed_indices.add(q_idx_tuple)
-                else:
-                    selected_data = index_to_selected[q_idx_tuple]
-                result[key] = torch.stack(selected_data[key])
+                batch = index_to_batch[q_idx_tuple]
+                val = batch[key]
+                result[key] = torch.stack(val) if isinstance(val, list) else val
         return result
     
     # no videos
@@ -717,10 +731,12 @@ class LeRobotDataset(torch.utils.data.Dataset):
         ep_start = self.episode_data_index["from"][episode_id].item()
         ep_end = self.episode_data_index["to"][episode_id].item()
         q_idx = list(range(ep_start, ep_end))
-        # selected_data = self.hf_dataset.select(q_idx)
-        selected_data = self.hf_dataset[q_idx]
+        batch = self.hf_dataset[q_idx]  # integer list access triggers transform
         res_keys = self.meta.features.keys() - set(self.meta.video_keys)
-        res = {key : torch.stack(selected_data[key]) for key in res_keys}
+        res = {}
+        for key in res_keys:
+            val = batch[key]
+            res[key] = torch.stack(val) if isinstance(val, list) else val
         return res
 
     def _query_videos(self, query_timestamps: dict[str, list[float]], ep_idx: int) -> dict[str, torch.Tensor]:

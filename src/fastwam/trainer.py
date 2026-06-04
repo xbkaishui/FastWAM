@@ -132,13 +132,14 @@ class Wan22Trainer:
         if not self.wandb_enabled or not self.accelerator.is_main_process:
             return
         try:
-            import wandb
+            # import wandb
+            import swanlab
         except ImportError as e:
             raise ImportError(
                 "wandb logging is enabled in config (`wandb.enabled=true`) but wandb is not installed."
             ) from e
 
-        self.wandb_run = wandb.init(
+        swanlab.init(
             entity=self.cfg.wandb.workspace,
             project=self.cfg.wandb.project,
             name=self.cfg.wandb.name,
@@ -152,6 +153,7 @@ class Wan22Trainer:
             self.cfg.wandb.project,
             self.cfg.wandb.name,
         )
+        self.wandb_run = swanlab
 
     def _wandb_log(self, payload: dict):
         if self.wandb_run is None:

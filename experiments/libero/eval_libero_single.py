@@ -42,12 +42,78 @@ from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
 from libero.libero import benchmark
 from action_ensembler import ActionEnsembler
 
+
+# --- Monkey-patch: add object position/pose methods to env instance ---
+import types
+
+
+def _get_object_body_id(self, object_name):
+    """Resolve the MuJoCo body ID for a given object name."""
+    for candidate in [object_name, f"{object_name}_main"]:
+        try:
+            return self.sim.model.body_name2id(candidate)
+        except (ValueError, KeyError):
+            continue
+    raise ValueError(
+        f"Cannot find MuJoCo body for object '{object_name}'. "
+        f"Tried: '{object_name}', '{object_name}_main'."
+    )
+
+
+def _get_object_position(self, object_name):
+    """Get the 3D position of an object by name."""
+    body_id = self._get_object_body_id(object_name)
+    return self.sim.data.body_xpos[body_id].copy()
+
+
+def _get_object_pose(self, object_name):
+    """Get the pose (position + quaternion) of an object."""
+    body_id = self._get_object_body_id(object_name)
+    pos = self.sim.data.body_xpos[body_id].copy()
+    quat = self.sim.data.body_xquat[body_id].copy()
+    return {"pos": pos, "quat": quat}
+
+
+def _set_object_position(self, object_name, position, quaternion=None):
+    """Set the position and optionally quaternion of an object."""
+    body_id = self._get_object_body_id(object_name)
+    jnt_addr = self.sim.model.body_jntadr[body_id]
+    if jnt_addr < 0:
+        raise ValueError(f"Object '{object_name}' has no joint, cannot set position.")
+    qpos_addr = self.sim.model.jnt_qposadr[jnt_addr]
+    self.sim.data.qpos[qpos_addr:qpos_addr + 3] = position
+    if quaternion is not None:
+        self.sim.data.qpos[qpos_addr + 3:qpos_addr + 7] = quaternion
+    self.sim.forward()
+
+
+def _get_workspace_offset(self):
+    """Return the workspace offset (table offset)."""
+    return self.table_offset
+
+
+def _patch_env_methods(env_inner):
+    """Attach helper methods to an environment instance if not already present."""
+    if not hasattr(env_inner, '_get_object_body_id'):
+        env_inner._get_object_body_id = types.MethodType(_get_object_body_id, env_inner)
+    if not hasattr(env_inner, 'get_object_position'):
+        env_inner.get_object_position = types.MethodType(_get_object_position, env_inner)
+    if not hasattr(env_inner, 'get_object_pose'):
+        env_inner.get_object_pose = types.MethodType(_get_object_pose, env_inner)
+    if not hasattr(env_inner, 'set_object_position'):
+        env_inner.set_object_position = types.MethodType(_set_object_position, env_inner)
+    if not hasattr(env_inner, 'get_workspace_offset'):
+        env_inner.get_workspace_offset = types.MethodType(_get_workspace_offset, env_inner)
+# --- End monkey-patch ---
+
 OmegaConf.register_new_resolver("eval", eval)
 OmegaConf.register_new_resolver("max", lambda x: max(x))
 OmegaConf.register_new_resolver("split", lambda s, idx: s.split("/")[int(idx)])
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+NEED_RAND_POS = True
+POS_LEVEL = 1
 
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -385,6 +451,9 @@ def _predict_action_chunk(
         device=model_device,
         dtype=model.torch_dtype,
     )
+    
+    # hack part set proprio to zero
+    # proprio = torch.zeros_like(proprio)
 
     infer_kwargs = {
         "prompt": prompt,
@@ -411,11 +480,14 @@ def _predict_action_chunk(
         infer_kwargs["num_video_frames"] = _get_num_video_frames(cfg)
 
     with torch.no_grad():
+        t_infer_start = time.time()
         if visualize_future_video:
             pred = model.infer_joint(**infer_kwargs)
             predicted_future_frames = _select_predicted_future_frames(pred["video"], cfg)
         else:
             pred = model.infer_action(**infer_kwargs)
+        t_infer_end = time.time()
+        logging.info("_predict_action_chunk model inference took %.4f s", t_infer_end - t_infer_start)
     action = pred["action"]  # [T, D]
 
     action = _denormalize_action(action, processor)[0]  # [T, D]
@@ -465,6 +537,42 @@ def run_single_episode(
 
     env.reset()
     obs = env.set_init_state(initial_state)
+    
+    
+    if NEED_RAND_POS:
+        # _patch_env_methods(env.env)
+        # set object name 
+        object_name = "plate_1"
+        plate_object = env.env.get_object(object_name)
+        logging.info(f'plage object {plate_object}')
+        pos = env.env.get_object_position(object_name)
+        logging.info(f"object_name {object_name}, 位置: {pos}")  # [x, y,
+        # 2. 获取对象姿态（位置+旋转）
+        pose = env.env.get_object_pose(object_name) 
+        logging.info(f"object_name {object_name}, 四元数: {pose['quat']}")
+        workspace_offset = env.env.get_workspace_offset()
+        logging.info(f'workspace offset {workspace_offset}')
+        # random x offset
+        if POS_LEVEL == 1:
+            x_offset = np.random.uniform(0.05, 0.15)
+            y_offset = np.random.uniform(0.05, 0.15)
+        elif POS_LEVEL == 2:
+            x_offset = np.random.uniform(0.03, 0.1)
+            y_offset = np.random.uniform(0.03, 0.1)
+        elif POS_LEVEL == 3:
+            x_offset = np.random.uniform(-0.05, 0.05)
+            y_offset = np.random.uniform(-0.05, 0.05)
+        else:
+            x_offset = np.random.uniform(0.03, 0.05)
+            y_offset = np.random.uniform(0.03, 0.25)
+        # x_offset = np.random.uniform(0.03, 0.1)
+        # y_offset = np.random.uniform(0.03, 0.1)
+        new_pos = pos + [x_offset, y_offset, -0.9]
+        logging.info(f'set object_name {object_name}, old pos {pos}, new pos {new_pos}')
+        # TODO enable later
+        env.env.set_object_position(object_name, new_pos.tolist(), quaternion=pose['quat'])
+        # for _ in range(num_steps_wait):
+        #     obs, _, done, _ = env.step(get_libero_dummy_action()) 
     if use_action_ensembler:
         ensembler = ActionEnsembler()
         ensembler.reset()

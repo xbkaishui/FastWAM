@@ -43,6 +43,7 @@ OmegaConf.register_new_resolver("split", lambda s, idx: s.split("/")[int(idx)], 
 CKPT_PATH = "/root/autodl-fs/ckpts/models/fastwam/libero_uncond_2cam224.pt"
 DATASET_STATS_PATH = "/root/autodl-fs/ckpts/models/fastwam/libero_uncond_2cam224_dataset_stats.json"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"DEVICE: {DEVICE}")
 MIXED_PRECISION = "bf16"
 
 # Image dimensions from config: video_size=[224, 448] (H, W) for 2-camera horizontal concat
@@ -115,7 +116,8 @@ def load_model_with_hydra() -> tuple:
     t0 = time.time()
     model.load_checkpoint(CKPT_PATH)
     logger.info("Checkpoint loaded in %.2fs", time.time() - t0)
-    model.eval()
+    model = model.to(dtype=torch.bfloat16, device=DEVICE).eval()
+    logger.info("Model cast to bf16 on %s", DEVICE)
 
     # Load processor and dataset stats
     logger.info("Loading dataset stats: %s", DATASET_STATS_PATH)
@@ -169,6 +171,26 @@ def test_infer_action(model, processor: FastWAMProcessor, cfg: DictConfig):
         )
     elapsed = time.time() - t0
     logger.info("[Stage 4] Model inference (infer_action): %.4fs", elapsed)
+    
+    # run perf count with proper CUDA sync
+    run_cnt = 10
+    for i in range(run_cnt):
+        torch.cuda.synchronize()
+        t0 = time.time()
+        with torch.no_grad():
+            result = model.infer_action(
+                prompt=prompt,
+                input_image=input_image,
+                action_horizon=ACTION_HORIZON,
+                proprio=proprio,
+                num_inference_steps=NUM_INFERENCE_STEPS,
+                seed=42,
+                rand_device="cpu",
+                tiled=False,
+            )
+        torch.cuda.synchronize()
+        elapsed = time.time() - t0
+        logger.info("[Stage 4] Model inference (infer_action) - run %d: %.4fs", i+1, elapsed)
 
     # Validate output
     action = result["action"]
@@ -331,9 +353,9 @@ def main():
     logger.info("[Phase] test_infer_action total: %.2fs", time.time() - t_phase)
 
      # Run tests
-    t_phase = time.time()
-    action = test_infer_action(model, processor, cfg)
-    logger.info("[Phase] test_infer_action2 total: %.2fs", time.time() - t_phase)
+    # t_phase = time.time()
+    # action = test_infer_action(model, processor, cfg)
+    # logger.info("[Phase] test_infer_action2 total: %.2fs", time.time() - t_phase)
 
 
     # t_phase = time.time()

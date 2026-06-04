@@ -16,7 +16,7 @@ model:
 EVALUATION:
   task_suite_name: libero_spatial
   task_id: 0
-  num_trials: 50
+  num_trials: 30
   output_dir: ./evaluate_results/libero/${hydra:runtime.choices.task}/${now:%Y%m%d_%H%M%S}
 
   # Runtime behavior
@@ -25,6 +25,7 @@ EVALUATION:
   replan_steps: 10
   binarize_gripper: true
   use_action_ensembler: false
+  # visual prediction future videos
   visualize_future_video: false
 
   # Action inference
@@ -44,12 +45,12 @@ MULTIRUN:
   create_only: false
   task_file: null
   task_suite_names:
-    - libero_10
+    # - libero_10
     - libero_goal
-    - libero_spatial
-    - libero_object
+    # - libero_spatial
+    # - libero_object
   num_gpus: 8
-  max_tasks_per_gpu: 2
+  max_tasks_per_gpu: 1
 
 hydra:
   job:

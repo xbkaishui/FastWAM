@@ -111,6 +111,6 @@ accelerate launch \
   --config_file scripts/accelerate_configs/accelerate_zero2_ds.yaml \
   --num_processes "${NPROC_PER_NODE}" \
   scripts/train.py \
-  "output_dir=./runs/${TASK_BASENAME}/${RUN_ID}" \
+  "output_dir=/root/autodl-fs/ckpts/fast_wam/runs/${TASK_BASENAME}/${RUN_ID}" \
   "wandb.name=${TASK_BASENAME}" \
   "${EXTRA_ARGS[@]}"

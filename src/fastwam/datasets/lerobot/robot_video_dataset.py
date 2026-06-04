@@ -93,6 +93,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
                     dataset_stats = self.lerobot_dataset.get_dataset_stats(processor)
                     work_dir = misc.get_work_dir()
                     save_dataset_stats_to_json(dataset_stats, os.path.join(work_dir, "dataset_stats.json"))
+                    logger.info(f"Dataset stats saved to {work_dir}/dataset_stats.json")
                 else:
                     dataset_stats = None
                 if torch.distributed.is_available() and torch.distributed.is_initialized():
