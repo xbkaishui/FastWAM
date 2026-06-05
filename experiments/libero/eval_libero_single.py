@@ -112,7 +112,7 @@ OmegaConf.register_new_resolver("split", lambda s, idx: s.split("/")[int(idx)])
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-NEED_RAND_POS = True
+NEED_RAND_POS = False
 POS_LEVEL = 1
 
 class NumpyEncoder(json.JSONEncoder):

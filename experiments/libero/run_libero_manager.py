@@ -23,8 +23,8 @@ def create_task_file(output_file: Path, task_suite_names: list[str]) -> Path:
             print(f"- Number of tasks: {n_tasks}")
             for task_id in range(n_tasks):
                 # hack part
-                if task_id != 8:
-                    continue
+                # if task_id != 8:
+                #     continue
                 f.write(f"{suite_name},{task_id}\n")
                 total_tasks += 1
                 
