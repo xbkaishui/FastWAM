@@ -19,7 +19,7 @@ num_epochs: 10
 max_steps: null
 log_every: 10
 save_every: 2000
-eval_every: 200
+eval_every: -1
 
 # training
 gradient_accumulation_steps: 1

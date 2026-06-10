@@ -1,1 +1,1 @@
-bash scripts/train_zero1.sh 1 task=pangceban_uncond_2cam224_1e-4
+bash scripts/train_zero1.sh 4 task=pangceban_uncond_2cam224_1e-4

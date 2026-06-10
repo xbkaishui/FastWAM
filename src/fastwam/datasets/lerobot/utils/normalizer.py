@@ -161,11 +161,15 @@ class CustomActionFieldNormalizer:
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize: input space -> normalized space."""
-        return x * self.scale + self.offset
+        scale = self.scale.to(device=x.device, dtype=x.dtype)
+        offset = self.offset.to(device=x.device, dtype=x.dtype)
+        return x * scale + offset
 
     def backward(self, x: torch.Tensor) -> torch.Tensor:
         """Denormalize: normalized space -> input space."""
-        return (x - self.offset) / self.scale
+        scale = self.scale.to(device=x.device, dtype=x.dtype)
+        offset = self.offset.to(device=x.device, dtype=x.dtype)
+        return (x - offset) / scale
     
 def save_dataset_stats_to_json(dataset_stats: dict, file_path: str):
 

@@ -3,6 +3,7 @@ import json
 import inspect
 import os
 import re
+import shutil
 from math import ceil
 from pathlib import Path
 import time
@@ -596,9 +597,26 @@ class Wan22Trainer:
         self.accelerator.save_state(output_dir=state_path)
         if self.accelerator.is_main_process:
             self._save_trainer_state(state_path)
+            self._cleanup_old_states(max_keep=2)
         self.accelerator.wait_for_everyone()
 
         return {"weights_path": ckpt_path, "state_path": state_path}
+
+    def _cleanup_old_states(self, max_keep: int = 2):
+        """Keep only the most recent `max_keep` state directories, delete older ones."""
+        state_root = Path(self.state_dir)
+        if not state_root.exists():
+            return
+        state_dirs = sorted(
+            [d for d in state_root.iterdir() if d.is_dir() and d.name.startswith("step_")],
+            key=lambda d: d.name,
+        )
+        if len(state_dirs) <= max_keep:
+            return
+        dirs_to_remove = state_dirs[:-max_keep]
+        for old_dir in dirs_to_remove:
+            logger.info("Removing old training state: %s", old_dir)
+            shutil.rmtree(old_dir, ignore_errors=True)
 
     def load_training_state(self, state_dir: str):
         self.accelerator.load_state(input_dir=state_dir)
@@ -655,7 +673,7 @@ class Wan22Trainer:
 
         logger.info("Starting training with max_steps=%d.", self.max_steps)
         data_iter = iter(self.train_loader)
-        import ipdb; ipdb.set_trace()
+        # import ipdb; ipdb.set_trace()
         self.run_start_step = self.global_step
         self.run_start_time = time.perf_counter()
 
