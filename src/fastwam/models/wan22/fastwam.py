@@ -11,6 +11,7 @@ from .action_dit import ActionDiT
 from .helpers.loader import load_wan22_ti2v_5b_components
 from .mot import MoT
 from .schedulers.scheduler_continuous import WanContinuousFlowMatchScheduler
+from fastwam.datasets.lerobot.utils.normalizer import CustomActionFieldNormalizer
 
 logger = get_logger(__name__)
 
@@ -38,6 +39,7 @@ class FastWAM(torch.nn.Module):
         action_num_train_timesteps: int = 1000,
         loss_lambda_video: float = 1.0,
         loss_lambda_action: float = 1.0,
+        use_custom_action: bool = False,
     ):
         super().__init__()
         self.video_expert = video_expert
@@ -84,8 +86,12 @@ class FastWAM(torch.nn.Module):
         self.torch_dtype = torch_dtype
         self.loss_lambda_video = float(loss_lambda_video)
         self.loss_lambda_action = float(loss_lambda_action)
-
+        self.use_custom_action = use_custom_action
+        
+        logger.info(f'use_custom_action: {self.use_custom_action}')
         self.to(self.device)
+        self.custom_action_norm = CustomActionFieldNormalizer(mode="z-score")
+        
 
     @classmethod
     def from_wan22_pretrained(
@@ -111,6 +117,7 @@ class FastWAM(torch.nn.Module):
         action_num_train_timesteps: int = 1000,
         loss_lambda_video: float = 1.0,
         loss_lambda_action: float = 1.0,
+        use_custom_action: bool = False,
     ):
         if video_dit_config is None:
             raise ValueError("`video_dit_config` is required for FastWAM.from_wan22_pretrained().")
@@ -168,6 +175,7 @@ class FastWAM(torch.nn.Module):
             action_num_train_timesteps=action_num_train_timesteps,
             loss_lambda_video=loss_lambda_video,
             loss_lambda_action=loss_lambda_action,
+            use_custom_action=use_custom_action,
         )
         model.model_paths = {
             "video_dit": components.dit_path,
@@ -302,6 +310,9 @@ class FastWAM(torch.nn.Module):
             raise ValueError("`sample['action']` is required for FastWAM training.")
 
         action = sample["action"]
+        if self.use_custom_action:
+            custom_action = sample.get("custom_action", None)
+            action = self.custom_action_norm.forward(custom_action)
         if action.ndim != 3:
             raise ValueError(f"`sample['action']` must be 3D [B, T, a_dim], got shape {tuple(action.shape)}")
         action_horizon = int(action.shape[1])

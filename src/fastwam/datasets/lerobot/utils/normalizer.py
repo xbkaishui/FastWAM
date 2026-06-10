@@ -132,6 +132,41 @@ class SingleFieldLinearNormalizer:
         x = (x - self.offset) / self.scale
         return x
 
+STATS_FILE = "/root/autodl-fs/datasets/pangceban_left_right_data_20260602_658_delta_action/meta/stats.json"
+
+
+class CustomActionFieldNormalizer:
+    """Normalizer for custom_action field using stats from dataset meta/stats.json."""
+    std_reg = 1e-8
+
+    def __init__(self, stats_file: str = STATS_FILE, mode: NormMode = "z-score"):
+        self.stats = load_dataset_stats_from_json(stats_file)
+        self.mode = mode
+
+        ca_stats = self.stats["custom_action"]
+        if mode == "z-score":
+            self.mean = ca_stats["mean"].float()  # [32, 28]
+            self.std = ca_stats["std"].float()    # [32, 28]
+            self.scale = 1.0 / (self.std + self.std_reg)
+            self.offset = -self.mean * self.scale
+        elif mode == "min/max":
+            input_min = ca_stats["min"].float()
+            input_max = ca_stats["max"].float()
+            input_range = input_max - input_min
+            input_range[input_range < 1e-4] = 2.0  # output_max - output_min
+            self.scale = 2.0 / input_range  # map to [-1, 1]
+            self.offset = -1.0 - self.scale * input_min
+        else:
+            raise ValueError(f"Unsupported mode for CustomActionFieldNormalizer: {mode}")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Normalize: input space -> normalized space."""
+        return x * self.scale + self.offset
+
+    def backward(self, x: torch.Tensor) -> torch.Tensor:
+        """Denormalize: normalized space -> input space."""
+        return (x - self.offset) / self.scale
+    
 def save_dataset_stats_to_json(dataset_stats: dict, file_path: str):
 
     def convert_tensor(obj):

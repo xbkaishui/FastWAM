@@ -257,6 +257,9 @@ class RobotVideoDataset(torch.utils.data.Dataset):
             "action_is_pad": sample["action_is_pad"],
             "proprio_is_pad": sample["proprio_is_pad"],
         }
+        # add custom action
+        if 'custom_action' in sample:
+            data["custom_action"] = sample["custom_action"]
         return data
 
     def _get_cached_text_context(self, prompt: str):

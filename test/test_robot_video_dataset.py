@@ -35,7 +35,7 @@ def test_dataset_basic():
     print("创建 RobotVideoDataset (训练集) ...")
     print("=" * 60)
     dataset_dirs = train_cfg.dataset_dirs
-    dataset_dirs = [train_cfg.dataset_dirs[0], train_cfg.dataset_dirs[1]]
+    # dataset_dirs = [train_cfg.dataset_dirs[0], train_cfg.dataset_dirs[1]]
     dataset = RobotVideoDataset(
         dataset_dirs=dataset_dirs,
         shape_meta=train_cfg.shape_meta,

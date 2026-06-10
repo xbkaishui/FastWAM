@@ -26,6 +26,9 @@ train:
       # - key: observation.state
         raw_shape: 28 # before transform
         shape: 28 # after transform
+    custom_action:
+      - key: custom_action
+        raw_shape: [32, 28]
   num_frames: 33
   global_sample_stride: 1
   action_video_freq_ratio: 4 # 32 action, 9 video frames
@@ -35,7 +38,7 @@ train:
   is_training_set: true
   skip_padding_as_possible: false
   concat_multi_camera: "lerobot"
-  pretrained_norm_stats: null
+  pretrained_norm_stats: /root/foresee/FastWAM/configs/pangceban_dataset_stats.json
   processor:
     _target_: fastwam.datasets.lerobot.processors.fastwam_processor.FastWAMProcessor
     shape_meta: ${data.train.shape_meta}

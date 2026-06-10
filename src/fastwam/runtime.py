@@ -79,6 +79,7 @@ def create_fastwam(
     video_dit_config,
     tokenizer_max_len: int = 512,
     load_text_encoder: bool = True,
+    use_custom_action: bool = False,
     proprio_dim: int | None = None,
     action_dit_config=None,
     action_dit_pretrained_path: str | None = None,
@@ -155,6 +156,7 @@ def create_fastwam(
         action_num_train_timesteps=int(action_scheduler["num_train_timesteps"]),
         loss_lambda_video=float(loss.get("lambda_video", 1.0)),
         loss_lambda_action=float(loss.get("lambda_action", 1.0)),
+        use_custom_action=use_custom_action,
     )
 
 
@@ -164,6 +166,7 @@ def create_fastwam_joint(
     video_dit_config,
     tokenizer_max_len: int = 512,
     load_text_encoder: bool = True,
+    use_custom_action: bool = False,
     proprio_dim: int | None = None,
     action_dit_config=None,
     action_dit_pretrained_path: str | None = None,
@@ -249,6 +252,7 @@ def create_fastwam_idm(
     video_dit_config,
     tokenizer_max_len: int = 512,
     load_text_encoder: bool = True,
+    use_custom_action: bool = False,
     proprio_dim: int | None = None,
     action_dit_config=None,
     action_dit_pretrained_path: str | None = None,

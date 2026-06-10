@@ -64,6 +64,7 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
         self.image_meta = shape_meta["images"]
         self.state_meta = shape_meta["state"]
         self.action_meta = shape_meta["action"]
+        self.custom_action_meta = shape_meta.get("custom_action", [])
 
         delta_timestamps = {}
         for meta in self.image_meta:
@@ -85,6 +86,11 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
             meta["lerobot_key"] = f"action.{key}" if key != "default" else "action"
             delta_timestamps[meta["lerobot_key"]] = [(t * global_sample_stride) / fps for t in range(-past_action_size, -past_action_size + action_size)]
 
+        for meta in self.custom_action_meta:
+            key = meta["key"]
+            meta["lerobot_key"] = f"observation.{key}" if key != "default" else "observation.custom_action"
+            delta_timestamps[meta["lerobot_key"]] = [0.0]  # only current frame
+
         episodes = {}
         if val_set_proportion < 1e-6:
             for meta in metas:
@@ -105,6 +111,7 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
             dataset_dirs=self.dataset_dirs,
             episodes=episodes,
             delta_timestamps=delta_timestamps,
+            tolerances_s=dict.fromkeys(self.dataset_dirs, 0.04),
         )
         
         # HACK: lerobot 3.0 will fix this
@@ -149,6 +156,15 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
         # For config simplication
         # assert image.shape[1:] == raw_shape, f"Image '{key}' shape {image.shape[1:]} mismatch with {raw_shape}."
         return image
+
+    def _get_custom_action(self, meta, lerobot_sample) -> torch.Tensor:
+        """Get custom_action field from dataset. Only current frame, shape [action_horizon, action_dim]."""
+        key, lerobot_key, raw_shape = meta["key"], meta["lerobot_key"], meta["raw_shape"]
+        custom_action: torch.Tensor = lerobot_sample[lerobot_key]
+        # delta_timestamps=[0.0] gives shape [1, action_horizon, action_dim], squeeze the time dim
+        if custom_action.ndim == 3:
+            custom_action = custom_action.squeeze(0)
+        return custom_action
     
     def _split_lerobot_sample(self, lerobot_sample) -> Dict[str, Any]:
         return lerobot_sample
@@ -212,6 +228,7 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
             "action": {},
             "state": {},
             "images": {},
+            "custom_action": {},
         }
         for meta in self.state_meta:
             sample["state"][meta["key"]] = self._get_state(meta, lerobot_sample)
@@ -221,6 +238,10 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
 
         for meta in self.image_meta:
             sample["images"][meta["key"]] = self._get_image(meta, lerobot_sample)
+
+        for meta in self.custom_action_meta:
+            # only custom action
+            sample["custom_action"] = self._get_custom_action(meta, lerobot_sample)
 
         sample["action_is_pad"] = lerobot_sample[f"{self.action_meta[0]['lerobot_key']}_is_pad"]
         sample["state_is_pad"] = lerobot_sample[f"{self.state_meta[0]['lerobot_key']}_is_pad"]

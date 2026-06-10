@@ -308,6 +308,7 @@ def main(cfg: DictConfig):
         with torch.no_grad():
             for start in range(0, len(prompts), DEFAULT_BATCH_SIZE):
                 batch_prompts = prompts[start : start + DEFAULT_BATCH_SIZE]
+                print(f'Batch prompts: {batch_prompts}')
                 ids, mask = tokenizer(batch_prompts, return_mask=True, add_special_tokens=True)
                 ids = ids.to(device)
                 mask = mask.to(device=device, dtype=torch.bool)

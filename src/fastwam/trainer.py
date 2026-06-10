@@ -655,6 +655,7 @@ class Wan22Trainer:
 
         logger.info("Starting training with max_steps=%d.", self.max_steps)
         data_iter = iter(self.train_loader)
+        import ipdb; ipdb.set_trace()
         self.run_start_step = self.global_step
         self.run_start_time = time.perf_counter()
 
