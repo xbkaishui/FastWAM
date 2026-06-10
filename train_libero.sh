@@ -1,1 +1,1 @@
-bash scripts/train_zero1.sh 6 task=libero_uncond_2cam224_1e-4
+bash scripts/train_zero1.sh 6 task=libero_joint_2cam224_1e-4

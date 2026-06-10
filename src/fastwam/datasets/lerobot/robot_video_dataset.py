@@ -177,6 +177,31 @@ class RobotVideoDataset(torch.utils.data.Dataset):
             )  # [T_video, C, 128, 160]
             bottom = torch.cat([cam_left, cam_right], dim=-1)  # [T_video, C, 128, 320]
             video = torch.cat([cam_top, bottom], dim=-2)  # [T_video, C, 384, 320]
+        elif self.concat_multi_camera == "lerobot":
+            if num_cameras != 3:
+                raise ValueError(
+                    f"`concat_multi_camera='lerobot'` requires exactly 3 cameras, got {num_cameras}"
+                )
+            cam_top = transforms_F.resize(
+                video[0],
+                size=[224, 224],
+                interpolation=transforms_F.InterpolationMode.BILINEAR,
+                antialias=True,
+            )  # [T_video, C, 224, 224]
+            cam_left = transforms_F.resize(
+                video[1],
+                size=[112, 112],
+                interpolation=transforms_F.InterpolationMode.BILINEAR,
+                antialias=True,
+            )  # [T_video, C, 112, 112]
+            cam_right = transforms_F.resize(
+                video[2],
+                size=[112, 112],
+                interpolation=transforms_F.InterpolationMode.BILINEAR,
+                antialias=True,
+            )  # [T_video, C, 112, 112]
+            bottom = torch.cat([cam_left, cam_right], dim=-1)  # [T_video, C, 112, 224]
+            video = torch.cat([cam_top, bottom], dim=-2)  # [T_video, C, 336, 224]
         elif num_cameras > 1:
             if self.concat_multi_camera == "horizontal":
                 video = torch.cat([video[i] for i in range(num_cameras)], dim=-1)  # [T_video, C, H, num_cameras*W]
