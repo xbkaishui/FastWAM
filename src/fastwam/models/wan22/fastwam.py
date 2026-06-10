@@ -313,6 +313,7 @@ class FastWAM(torch.nn.Module):
         if self.use_custom_action:
             custom_action = sample.get("custom_action", None)
             action = self.custom_action_norm.forward(custom_action)
+            # logger.info(f"Using custom action normalization with {action.shape}")
         if action.ndim != 3:
             raise ValueError(f"`sample['action']` must be 3D [B, T, a_dim], got shape {tuple(action.shape)}")
         action_horizon = int(action.shape[1])
