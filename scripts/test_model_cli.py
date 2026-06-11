@@ -24,7 +24,7 @@ def test_model_infer():
         "observation.images.orbbec": np.random.rand(1, 3, 256, 256).astype(np.float32),
         "observation.state": np.random.rand(1, 28).astype(np.float32),
         "idx": 1,
-        "task": "task_grab",
+        "task": "right_pangceban",
     }
 
     # 将 frame 序列化到文件，方便后续复现

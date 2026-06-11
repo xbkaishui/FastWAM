@@ -54,6 +54,7 @@ import numpy as np
 import torch
 from PIL import Image
 
+# add path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 
@@ -140,7 +141,7 @@ def _compose_cfg(config_name: str, task_override: Optional[str] = None) -> DictC
 
     if GlobalHydra.instance().is_initialized():
         GlobalHydra.instance().clear()
-
+    print(f'configs_root {configs_root}')
     with initialize_config_dir(version_base="1.3", config_dir=str(configs_root)):
         cfg = compose(config_name=config_name, overrides=overrides)
     return cfg
@@ -625,7 +626,7 @@ def deploy(
     """
     # Compose config
     cfg = _compose_cfg(config_name, task_override=task_override)
-
+    import ipdb; ipdb.set_trace();
     # Resolve device
     if device.startswith("cuda") and not torch.cuda.is_available():
         logger.warning("CUDA unavailable, falling back to CPU.")
@@ -670,25 +671,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=str,
-        required=True,
+        default="configs/sim_pangceban.yaml",
         help="Hydra config file name under configs/ (e.g. sim_libero.yaml, sim_robotwin.yaml)",
     )
     parser.add_argument(
         "--ckpt",
         type=str,
-        required=True,
+        default="/root/autodl-fs/ckpts/fast_wam/runs/pangceban_uncond_2cam224_1e-4/2026-06-10_21-00-51/checkpoints/weights/step_006000.pt",
         help="Path to model checkpoint (.pt or directory)",
     )
     parser.add_argument(
         "--dataset_stats_path",
         type=str,
-        default=None,
+        default="/root/autodl-fs/ckpts/fast_wam/runs/pangceban_uncond_2cam224_1e-4/2026-06-10_21-00-51/dataset_stats.json",
         help="Path to dataset_stats.json. If not provided, will search near checkpoint.",
     )
     parser.add_argument(
         "--task",
         type=str,
-        default=None,
+        default="pangceban_uncond_2cam224_1e-4",
         help="Hydra task override (e.g. libero_uncond_2cam224_1e-4, robotwin_uncond_3cam_384_1e-4)",
     )
     parser.add_argument(
