@@ -2,6 +2,7 @@ import json
 import inspect
 import logging
 import os
+import pickle
 import sys
 import time
 from pathlib import Path
@@ -114,6 +115,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 NEED_RAND_POS = False
 POS_LEVEL = 1
+DEBUG = False
 
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -451,9 +453,21 @@ def _predict_action_chunk(
         device=model_device,
         dtype=model.torch_dtype,
     )
-    
-    # hack part set proprio to zero
-    # proprio = torch.zeros_like(proprio)
+    if DEBUG:
+        robot_state = _extract_sim_state(obs)
+        print(f'robot state {robot_state}')
+        # save imgs dict key image_name value numpy array  (256, 256, 3)
+        debug_dir = Path("/root/foresee/FastWAM/debug_images")
+        debug_dir.mkdir(exist_ok=True)
+        for img_name, img_arr in imgs.items():
+            save_path = debug_dir / f"{img_name}.png"
+            Image.fromarray(img_arr.astype(np.uint8)).save(save_path)
+            print(f"Saved {img_name} to {save_path}")
+        # save concatenated model input image [1, 3, 224, 448] range [-1, 1]
+        save_img = image[0].detach().cpu()  # [3, H, W]
+        save_img = ((save_img + 1.0) * 127.5).clamp(0, 255).to(torch.uint8)
+        Image.fromarray(save_img.permute(1, 2, 0).numpy()).save(debug_dir / "model_input.png")
+        print(f"Saved model_input to {debug_dir / 'model_input.png'}")
 
     infer_kwargs = {
         "prompt": prompt,
@@ -478,6 +492,12 @@ def _predict_action_chunk(
         infer_kwargs["num_video_frames"] = _get_num_video_frames(cfg)
     elif "num_video_frames" in inspect.signature(model.infer_action).parameters:
         infer_kwargs["num_video_frames"] = _get_num_video_frames(cfg)
+    if DEBUG:
+        # Save infer_kwargs to pickle for debugging/reproduction
+        pkl_path = f"{debug_dir}/infer_kwargs_{int(time.time()*1000)}.pkl"
+        with open(pkl_path, "wb") as f:
+            pickle.dump(infer_kwargs, f)
+        logging.info("Saved infer_kwargs to %s", pkl_path)
 
     with torch.no_grad():
         t_infer_start = time.time()
@@ -498,6 +518,10 @@ def _predict_action_chunk(
     action = invert_gripper_action(action)
     if bool(cfg.EVALUATION.get("binarize_gripper", False)):
         action[..., -1] = np.sign(action[..., -1])
+    print(f'action {action}')
+    if DEBUG:
+        import ipdb; ipdb.set_trace();
+        import os; os._exit(1);
     return action, imgs, predicted_future_frames
 
 

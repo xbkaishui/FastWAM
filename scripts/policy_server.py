@@ -200,9 +200,11 @@ class FastWAMPolicy:
         dataset_stats_path: Path,
         device: str = "cuda",
         port: int = 8765,
+        save_debug_images: bool = False,
     ) -> None:
         self.cfg = cfg
         self.device = device
+        self.save_debug_images = save_debug_images
 
         # --- Model dtype ---
         mixed_precision = str(cfg.get("mixed_precision", "bf16"))
@@ -272,8 +274,6 @@ class FastWAMPolicy:
         num_frames = int(cfg.data.train.num_frames)
         self._num_video_frames = (num_frames - 1) // action_video_freq_ratio + 1
 
-        # --- Replan queue ---
-        self.pending_actions: deque[np.ndarray] = deque()
         self._step_count = 0
 
         logger.info(
@@ -313,6 +313,7 @@ class FastWAMPolicy:
         """
         image_meta = self.processor.shape_meta["images"]
         num_cameras = self.processor.num_output_cameras
+        logger.info("Building image tensor from %d cameras", num_cameras)
 
         def _meta_to_hw(meta: dict) -> tuple[int, int]:
             shape = meta["shape"]
@@ -349,8 +350,31 @@ class FastWAMPolicy:
 
         # Convert all images to [H, W, 3] uint8
         images_hwc: Dict[str, np.ndarray] = {k: _to_hwc_numpy(v) for k, v in images.items()}
-        camera_keys = sorted(images_hwc.keys())
 
+        # Use the order defined in shape_meta["images"] (same as training)
+        camera_keys = [meta["key"] for meta in image_meta]
+        # Validate that all required camera keys are present
+        missing = [k for k in camera_keys if k not in images_hwc]
+        if missing:
+            # Try fuzzy match: incoming keys might be suffixes of meta keys or vice versa
+            available = list(images_hwc.keys())
+            logger.warning(
+                "Camera key mismatch. Expected (from shape_meta): %s, got: %s. "
+                "Falling back to available keys in shape_meta order.",
+                camera_keys, available,
+            )
+            # Match by checking if available key ends with meta key or meta key ends with available key
+            matched_keys = []
+            for meta_key in camera_keys:
+                found = None
+                for avail_key in available:
+                    if avail_key == meta_key or avail_key.endswith(meta_key) or meta_key.endswith(avail_key):
+                        found = avail_key
+                        break
+                if found:
+                    matched_keys.append(found)
+            camera_keys = matched_keys if matched_keys else available[:num_cameras]
+        print(f'Using camera keys: {camera_keys}')
         if num_cameras == 1:
             # Single camera
             cam_key = camera_keys[0]
@@ -424,6 +448,17 @@ class FastWAMPolicy:
         # (robot_video_dataset.py: resize_transform -> crop_transform -> normalize_transform)
         image_tensor = self._resize_transform(image_tensor)
         image_tensor = self._crop_transform(image_tensor)
+        # Save to local path for debugging
+        if self.save_debug_images:
+            debug_dir = PROJECT_ROOT / "debug_images"
+            debug_dir.mkdir(exist_ok=True)
+            save_img = image_tensor.clone()
+            if save_img.dtype != torch.uint8:
+                save_img = save_img.clamp(0, 255).to(torch.uint8)
+            save_path = debug_dir / f"input_step_{self._step_count:04d}.png"
+            Image.fromarray(save_img.permute(1, 2, 0).numpy()).save(save_path)
+            logger.info("Saved debug image to %s", save_path)
+
         image_tensor = self._normalize_transform(image_tensor)  # [3, H, W] range [-1, 1]
 
         # Move to device with target dtype, add batch dim
@@ -462,7 +497,10 @@ class FastWAMPolicy:
             action = action.unsqueeze(0)
         if action.ndim != 3:
             raise ValueError(f"Expected action tensor [B, T, D], got {tuple(action.shape)}")
-
+        if self.model.use_custom_action:
+            action = action.to(dtype=torch.float32, device="cpu")
+            denorm = self.model.custom_action_norm.backward(action)
+            return denorm.numpy()[0]
         action_meta = self.processor.shape_meta["action"]
         if len(action_meta) != 1:
             raise ValueError("Expected exactly one merged action key in shape_meta['action'].")
@@ -498,6 +536,9 @@ class FastWAMPolicy:
 
         # Normalize state
         proprio = self._normalize_state(state)
+        
+        if proprio.ndim == 3:
+            proprio = proprio.squeeze(0)
 
         # Format prompt
         prompt = DEFAULT_PROMPT.format(task=instruction)
@@ -538,9 +579,7 @@ class FastWAMPolicy:
         """Process observation and return action(s).
 
         Called by WebsocketPolicyServer on each client request.
-
-        Implements replan logic: if action queue is empty, run inference to
-        fill it; then pop and return the next batch of actions.
+        Runs inference directly on every call and returns the predicted action chunk.
 
         Args:
             obs: Observation dict from client with keys:
@@ -552,49 +591,43 @@ class FastWAMPolicy:
             Dict with "action" (torch.Tensor) and "success_proba" (torch.Tensor).
         """
         t0 = time.perf_counter()
+        logger.info("Received observation from client.")
 
-        # If no pending actions, run inference
-        if len(self.pending_actions) == 0:
-            images = obs.get("images", {})
-            state = obs.get("state")
-            instruction = obs.get("instruction", "")
+        # Extract images: keys containing "observation.images" are camera images
+        images = {}
+        for k, v in obs.items():
+            if "observation.images" in k:
+                # Use the last part of the key as camera name (e.g. "head_right")
+                cam_name = k.split(".")[-1]
+                images[cam_name] = v
 
-            if state is None:
-                raise ValueError(
-                    "Observation must contain 'state' (proprioceptive state vector)."
-                )
-            if len(images) == 0:
-                raise ValueError(
-                    "Observation must contain 'images' dict with at least one camera."
-                )
+        state = obs.get("observation.state")
+        instruction = obs.get("task", "")
 
-            state = np.asarray(state, dtype=np.float32)
-            action_chunk = self._infer_action_chunk(images, state, instruction)
+        if state is None:
+            raise ValueError(
+                "Observation must contain 'state' (proprioceptive state vector)."
+            )
+        if len(images) == 0:
+            raise ValueError(
+                "Observation must contain 'images' dict with at least one camera."
+            )
 
-            # Fill action queue with replan_steps actions
-            n_exec = min(self.replan_steps, action_chunk.shape[0])
-            for i in range(n_exec):
-                self.pending_actions.append(action_chunk[i].astype(np.float32))
-
-        # Pop next action from queue
-        if len(self.pending_actions) == 0:
-            logger.warning("No actions generated from inference; returning zeros.")
-            action_dim = self.processor.shape_meta["action"][0]["shape"]
-            action = np.zeros(action_dim, dtype=np.float32)
-        else:
-            action = self.pending_actions.popleft()
+        # state = np.asarray(state, dtype=np.float32)
+        action_chunk = self._infer_action_chunk(images, state, instruction)
 
         self._step_count += 1
         elapsed_ms = (time.perf_counter() - t0) * 1000
+        logger.info("Inference step %d took %.1f ms", self._step_count, elapsed_ms)
 
+        # Return full action chunk [T, D]
         return {
-            "action": torch.from_numpy(action),
+            "action": torch.from_numpy(action_chunk.astype(np.float32)),
             "success_proba": torch.tensor([1.0]),
         }
 
     def reset(self) -> None:
-        """Reset policy internal state (clear action queue)."""
-        self.pending_actions.clear()
+        """Reset policy internal state."""
         self._step_count = 0
         logger.info("Policy reset.")
 
@@ -612,6 +645,7 @@ def deploy(
     device: str = "cuda",
     port: int = 8765,
     host: str = "0.0.0.0",
+    save_debug_images: bool = False,
 ) -> None:
     """Deploy the FastWAM policy as a WebSocket server.
 
@@ -626,7 +660,6 @@ def deploy(
     """
     # Compose config
     cfg = _compose_cfg(config_name, task_override=task_override)
-    import ipdb; ipdb.set_trace();
     # Resolve device
     if device.startswith("cuda") and not torch.cuda.is_available():
         logger.warning("CUDA unavailable, falling back to CPU.")
@@ -645,6 +678,7 @@ def deploy(
         checkpoint_path=str(ckpt_path),
         dataset_stats_path=stats_path,
         device=device,
+        save_debug_images=save_debug_images,
     )
 
     # Start server
@@ -671,7 +705,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=str,
-        default="configs/sim_pangceban.yaml",
+        default="sim_pangceban.yaml",
         help="Hydra config file name under configs/ (e.g. sim_libero.yaml, sim_robotwin.yaml)",
     )
     parser.add_argument(
@@ -716,6 +750,12 @@ def parse_args() -> argparse.Namespace:
         default="0.0.0.0",
         help="WebSocket server host (default: 0.0.0.0)",
     )
+    parser.add_argument(
+        "--save_debug_images",
+        action="store_true",
+        default=False,
+        help="Save preprocessed input images to debug_images/ for debugging",
+    )
     return parser.parse_args()
 
 
@@ -734,4 +774,5 @@ if __name__ == "__main__":
         device=args.device,
         port=args.port,
         host=args.host,
+        save_debug_images=args.save_debug_images,
     )

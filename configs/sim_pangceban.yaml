@@ -12,6 +12,7 @@ model:
   load_text_encoder: true
   skip_dit_load_from_pretrain: true
   action_dit_pretrained_path: null
+  use_custom_action: true
 
 EVALUATION:
   task_suite_name: libero_spatial
