@@ -13,11 +13,11 @@ from model_cli import ModelMonitor
 
 
 def test_model_infer_random_data():
-    # host = "127.0.0.1"
-    # port = 6006
+    host = "127.0.0.1"
+    port = 6006
     # https://u673024-ae2e-cd2077e9.westc.seetacloud.com:8443
-    host = "u673024-ae2e-cd2077e9.westc.seetacloud.com"
-    port = 8443
+    host = "connect.westc.seetacloud.com"
+    port = 15245
     model_monitor = ModelMonitor(host=host, port=port)
     model_monitor.start()
 

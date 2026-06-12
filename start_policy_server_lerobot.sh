@@ -4,7 +4,7 @@
 
 # 默认参数
 CONFIG="${CONFIG:-sim_pangceban.yaml}"
-CKPT="${CKPT:-/root/autodl-fs/ckpts/fast_wam/runs/pangceban_uncond_2cam224_1e-4/2026-06-11_08-24-59/checkpoints/weights/step_012000.pt}"
+CKPT="${CKPT:-/root/autodl-fs/ckpts/fast_wam/runs/pangceban_uncond_2cam224_1e-4/2026-06-11_08-24-59/checkpoints/weights/step_018000.pt}"
 DATASET_STATS="${DATASET_STATS:-/root/autodl-fs/ckpts/fast_wam/runs/pangceban_uncond_2cam224_1e-4/2026-06-11_08-24-59/dataset_stats.json}"
 TASK="${TASK:-pangceban_uncond_2cam224_1e-4}"
 DEVICE="${DEVICE:-cuda}"
