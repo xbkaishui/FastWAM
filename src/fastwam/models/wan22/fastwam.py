@@ -1016,6 +1016,7 @@ class FastWAM(torch.nn.Module):
             fuse_vae_embedding_in_latents=fuse_flag,
         )
         video_seq_len = int(video_pre["tokens"].shape[1])
+        print(f'video seq len {video_seq_len}')
         attention_mask = self._build_mot_attention_mask(
             video_seq_len=video_seq_len,
             action_seq_len=latents_action.shape[1],
