@@ -4,6 +4,7 @@ import inspect
 import os
 import re
 import shutil
+from contextlib import nullcontext
 from math import ceil
 from pathlib import Path
 import time
@@ -11,9 +12,10 @@ import time
 import numpy as np
 import torch
 from accelerate import Accelerator
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, SequentialLR
+from torch.profiler import profile, record_function, ProfilerActivity, schedule as profiler_schedule
 from torch.utils.data import DataLoader
 
 from .utils.fs import ensure_dir
@@ -56,6 +58,17 @@ class Wan22Trainer:
                 "Expected one of: ['no', 'fp16', 'bf16']."
             )
         self.wandb_enabled = bool(cfg.wandb.enabled)
+
+        # Profiler configuration
+        profiler_cfg = getattr(cfg, "profiler", None)
+        if profiler_cfg is None:
+            profiler_cfg = OmegaConf.create({
+                "enabled": False, "skip_first": 10, "wait": 5,
+                "warmup": 1, "active": 3, "repeat": 1,
+                "record_shapes": True, "profile_memory": True, "with_stack": False,
+            })
+        self.profiler_enabled = bool(profiler_cfg.get("enabled", False))
+        self.profiler_cfg = profiler_cfg
 
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.gradient_accumulation_steps,
@@ -663,6 +676,46 @@ class Wan22Trainer:
             state_file,
         )
 
+    def _build_profiler_context(self):
+        """Build torch profiler context manager. Returns nullcontext if profiler is disabled."""
+        if not self.profiler_enabled:
+            return nullcontext()
+
+        pcfg = self.profiler_cfg
+        activities = [ProfilerActivity.CPU]
+        if torch.cuda.is_available():
+            activities.append(ProfilerActivity.CUDA)
+
+        profiler_log_dir = os.path.join(self.output_dir, "profiler_logs")
+        ensure_dir(profiler_log_dir)
+
+        def trace_handler(p):
+            # Only export trace on main process to avoid file conflicts with DeepSpeed
+            if self.accelerator.is_main_process:
+                torch.profiler.tensorboard_trace_handler(profiler_log_dir)(p)
+
+        prof = profile(
+            activities=activities,
+            schedule=profiler_schedule(
+                skip_first=int(pcfg.get("skip_first", 10)),
+                wait=int(pcfg.get("wait", 5)),
+                warmup=int(pcfg.get("warmup", 1)),
+                active=int(pcfg.get("active", 3)),
+                repeat=int(pcfg.get("repeat", 1)),
+            ),
+            record_shapes=bool(pcfg.get("record_shapes", True)),
+            profile_memory=bool(pcfg.get("profile_memory", True)),
+            with_stack=bool(pcfg.get("with_stack", False)),
+            on_trace_ready=trace_handler,
+        )
+        logger.info(
+            "Profiler enabled: skip_first=%d wait=%d warmup=%d active=%d repeat=%d log_dir=%s",
+            pcfg.get("skip_first", 10), pcfg.get("wait", 5),
+            pcfg.get("warmup", 1), pcfg.get("active", 3),
+            pcfg.get("repeat", 1), profiler_log_dir,
+        )
+        return prof
+
     def train(self):
         self._set_dit_only_train_mode()
 
@@ -677,129 +730,140 @@ class Wan22Trainer:
         self.run_start_step = self.global_step
         self.run_start_time = time.perf_counter()
 
-        while self.global_step < self.max_steps:
-            try:
-                sample = next(data_iter)
-                self.batch_in_epoch += 1
-            except StopIteration:
-                self.epoch += 1
-                self.batch_in_epoch = 0
-                self.train_sampler.clear_resume_batch_offset()
-                data_iter = iter(self.train_loader)
-                continue
+        prof_ctx = self._build_profiler_context()
+        with prof_ctx as prof:
+            while self.global_step < self.max_steps:
+                with record_function("data_loading"):
+                    try:
+                        sample = next(data_iter)
+                        self.batch_in_epoch += 1
+                    except StopIteration:
+                        self.epoch += 1
+                        self.batch_in_epoch = 0
+                        self.train_sampler.clear_resume_batch_offset()
+                        data_iter = iter(self.train_loader)
+                        continue
 
-            with self.accelerator.accumulate(self.model):
-                train_model = self.model if hasattr(self.model, "training_loss") else self.accelerator.unwrap_model(self.model)
+                with self.accelerator.accumulate(self.model):
+                    train_model = self.model if hasattr(self.model, "training_loss") else self.accelerator.unwrap_model(self.model)
 
-                with self.accelerator.autocast():
-                    loss, loss_dict = train_model.training_loss(sample)
-                self.accelerator.backward(loss)
+                    with record_function("forward"):
+                        with self.accelerator.autocast():
+                            loss, loss_dict = train_model.training_loss(sample)
 
-                if self.accelerator.sync_gradients:
-                    grad_norm = self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                    self.optimizer.step()
-                    if not self.accelerator.optimizer_step_was_skipped:
-                        self.scheduler.step()
-                    self.optimizer.zero_grad(set_to_none=True)
-                    self.global_step += 1
-                    global_loss = float(
-                        self.accelerator.gather(loss.detach().float().reshape(1)).mean().item()
-                    )
-                    global_loss_metrics = {}
-                    for key, value in loss_dict.items():
-                        metric_tensor = torch.tensor(float(value), device=loss.device, dtype=torch.float32).reshape(1)
-                        global_loss_metrics[key] = float(
-                            self.accelerator.gather(metric_tensor).mean().item()
+                    with record_function("backward"):
+                        self.accelerator.backward(loss)
+
+                    if self.accelerator.sync_gradients:
+                        with record_function("optimizer_step"):
+                            grad_norm = self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                            self.optimizer.step()
+                            if not self.accelerator.optimizer_step_was_skipped:
+                                self.scheduler.step()
+                            self.optimizer.zero_grad(set_to_none=True)
+                        self.global_step += 1
+                        global_loss = float(
+                            self.accelerator.gather(loss.detach().float().reshape(1)).mean().item()
                         )
-                    grad_norm_tensor = torch.tensor(grad_norm, device=loss.device, dtype=torch.float32)
-                    global_grad_norm = float(self.accelerator.gather(grad_norm_tensor).mean().item())
-
-                    current_lr = float(self.optimizer.param_groups[0]["lr"])
-
-                    if self.log_every > 0 and self.global_step % self.log_every == 0 and self.accelerator.is_main_process:
-                        eta_str, steps_per_sec = self._estimate_eta()
-                        description = "[train] epoch=%d step=%d/%d loss=%.4f " % (
-                            self.epoch,
-                            self.global_step,
-                            self.max_steps,
-                            global_loss,
-                        )
-                        if global_loss_metrics:
-                            detail_str = " ".join([f"{k}={v:.4f}" for k, v in sorted(global_loss_metrics.items())])
-                            description += detail_str + " "
-                        description += "lr=%.2e speed=%.2f step/s, %.2f samples/s eta=%s" % (
-                            current_lr,
-                            steps_per_sec,
-                            steps_per_sec * self.batch_size * self.accelerator.num_processes,
-                            eta_str,
-                        )
-                        logger.info(description)
-
-                        wandb_payload = {
-                            "train/loss": global_loss,
-                            "train/grad_norm": global_grad_norm,
-                            "train/lr": current_lr,
-                            "performance/steps_per_sec": steps_per_sec,
-                            "performance/samples_per_sec": steps_per_sec * self.batch_size * self.accelerator.num_processes,
-                        }
-                        for key, value in global_loss_metrics.items():
-                            wandb_payload[f"train/{key}"] = value
-                        self._wandb_log(wandb_payload)
-
-                    if (
-                        self.eval_every > 0
-                        and self.val_dataset is not None
-                        and self.global_step % self.eval_every == 0
-                    ):
-                        metrics = self.evaluate()
-                        self.accelerator.wait_for_everyone()
-                        if metrics is not None and self.accelerator.is_main_process:
-                            description = "[eval] step=%d val_loss=%.4f infer_psnr=%.4f infer_ssim=%.4f" % (
-                                self.global_step,
-                                metrics["val_loss"],
-                                metrics["psnr_rd"],
-                                metrics["ssim_rd"],
+                        global_loss_metrics = {}
+                        for key, value in loss_dict.items():
+                            metric_tensor = torch.tensor(float(value), device=loss.device, dtype=torch.float32).reshape(1)
+                            global_loss_metrics[key] = float(
+                                self.accelerator.gather(metric_tensor).mean().item()
                             )
-                            if "action_l2" in metrics:
-                                description += " action_l2=%.4f" % metrics["action_l2"]
-                            if "action_l1" in metrics:
-                                description += " action_l1=%.4f" % metrics["action_l1"]
+                        grad_norm_tensor = torch.tensor(grad_norm, device=loss.device, dtype=torch.float32)
+                        global_grad_norm = float(self.accelerator.gather(grad_norm_tensor).mean().item())
+
+                        current_lr = float(self.optimizer.param_groups[0]["lr"])
+
+                        if self.log_every > 0 and self.global_step % self.log_every == 0 and self.accelerator.is_main_process:
+                            eta_str, steps_per_sec = self._estimate_eta()
+                            description = "[train] epoch=%d step=%d/%d loss=%.4f " % (
+                                self.epoch,
+                                self.global_step,
+                                self.max_steps,
+                                global_loss,
+                            )
+                            if global_loss_metrics:
+                                detail_str = " ".join([f"{k}={v:.4f}" for k, v in sorted(global_loss_metrics.items())])
+                                description += detail_str + " "
+                            description += "lr=%.2e speed=%.2f step/s, %.2f samples/s eta=%s" % (
+                                current_lr,
+                                steps_per_sec,
+                                steps_per_sec * self.batch_size * self.accelerator.num_processes,
+                                eta_str,
+                            )
                             logger.info(description)
-                            eval_payload = {
-                                "eval/val_loss": float(metrics["val_loss"]),
-                                "eval/psnr_rg": float(metrics["psnr_rg"]),
-                                "eval/ssim_rg": float(metrics["ssim_rg"]),
-                                "eval/psnr_rd": float(metrics["psnr_rd"]),
-                                "eval/ssim_rd": float(metrics["ssim_rd"]),
-                                "eval/psnr_dg": float(metrics["psnr_dg"]),
-                                "eval/ssim_dg": float(metrics["ssim_dg"]),
+
+                            wandb_payload = {
+                                "train/loss": global_loss,
+                                "train/grad_norm": global_grad_norm,
+                                "train/lr": current_lr,
+                                "performance/steps_per_sec": steps_per_sec,
+                                "performance/samples_per_sec": steps_per_sec * self.batch_size * self.accelerator.num_processes,
                             }
-                            if "action_l2" in metrics:
-                                eval_payload["eval/action_l2"] = float(metrics["action_l2"])
-                            if "action_l1" in metrics:
-                                eval_payload["eval/action_l1"] = float(metrics["action_l1"])
-                            self._wandb_log(eval_payload)
+                            for key, value in global_loss_metrics.items():
+                                wandb_payload[f"train/{key}"] = value
+                            self._wandb_log(wandb_payload)
 
-                    if self.save_every > 0 and self.global_step % self.save_every == 0:
-                        ckpt_info = self.save_checkpoint()
-                        if self.accelerator.is_main_process:
-                            logger.info(
-                                "[ckpt] step=%d weights=%s state=%s",
-                                self.global_step,
-                                ckpt_info["weights_path"],
-                                ckpt_info["state_path"],
-                            )
+                        if (
+                            self.eval_every > 0
+                            and self.val_dataset is not None
+                            and self.global_step % self.eval_every == 0
+                        ):
+                            metrics = self.evaluate()
+                            self.accelerator.wait_for_everyone()
+                            if metrics is not None and self.accelerator.is_main_process:
+                                description = "[eval] step=%d val_loss=%.4f infer_psnr=%.4f infer_ssim=%.4f" % (
+                                    self.global_step,
+                                    metrics["val_loss"],
+                                    metrics["psnr_rd"],
+                                    metrics["ssim_rd"],
+                                )
+                                if "action_l2" in metrics:
+                                    description += " action_l2=%.4f" % metrics["action_l2"]
+                                if "action_l1" in metrics:
+                                    description += " action_l1=%.4f" % metrics["action_l1"]
+                                logger.info(description)
+                                eval_payload = {
+                                    "eval/val_loss": float(metrics["val_loss"]),
+                                    "eval/psnr_rg": float(metrics["psnr_rg"]),
+                                    "eval/ssim_rg": float(metrics["ssim_rg"]),
+                                    "eval/psnr_rd": float(metrics["psnr_rd"]),
+                                    "eval/ssim_rd": float(metrics["ssim_rd"]),
+                                    "eval/psnr_dg": float(metrics["psnr_dg"]),
+                                    "eval/ssim_dg": float(metrics["ssim_dg"]),
+                                }
+                                if "action_l2" in metrics:
+                                    eval_payload["eval/action_l2"] = float(metrics["action_l2"])
+                                if "action_l1" in metrics:
+                                    eval_payload["eval/action_l1"] = float(metrics["action_l1"])
+                                self._wandb_log(eval_payload)
 
-                    if self.global_step >= self.max_steps:
-                        ckpt_info = self.save_checkpoint()
-                        if self.accelerator.is_main_process:
-                            logger.info(
-                                "[done] max_steps reached step=%d weights=%s state=%s",
-                                self.global_step,
-                                ckpt_info["weights_path"],
-                                ckpt_info["state_path"],
-                            )
-                        return
+                        if self.save_every > 0 and self.global_step % self.save_every == 0:
+                            ckpt_info = self.save_checkpoint()
+                            if self.accelerator.is_main_process:
+                                logger.info(
+                                    "[ckpt] step=%d weights=%s state=%s",
+                                    self.global_step,
+                                    ckpt_info["weights_path"],
+                                    ckpt_info["state_path"],
+                                )
+
+                        if self.global_step >= self.max_steps:
+                            ckpt_info = self.save_checkpoint()
+                            if self.accelerator.is_main_process:
+                                logger.info(
+                                    "[done] max_steps reached step=%d weights=%s state=%s",
+                                    self.global_step,
+                                    ckpt_info["weights_path"],
+                                    ckpt_info["state_path"],
+                                )
+                            return
+
+                # Advance profiler schedule (safe to call even if prof is None)
+                if prof is not None:
+                    prof.step()
 
         ckpt_info = self.save_checkpoint()
         if self.accelerator.is_main_process:
@@ -809,4 +873,4 @@ class Wan22Trainer:
                 ckpt_info["weights_path"],
                 ckpt_info["state_path"],
             )
-        
+

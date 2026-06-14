@@ -40,6 +40,18 @@ wandb:
   group: null
   mode: online
 
+# profiler (torch.profiler)
+profiler:
+  enabled: false
+  skip_first: 10
+  wait: 5
+  warmup: 1
+  active: 3
+  repeat: 1
+  record_shapes: true
+  profile_memory: true
+  with_stack: false
+
 hydra:
   job:
     chdir: false
