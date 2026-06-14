@@ -424,6 +424,57 @@ def _compute_clip_mean_psnr(
     return float(np.mean(frame_psnr_values))
 
 
+def _warmup_model(
+    model: torch.nn.Module,
+    action_horizon: int,
+    input_h: int,
+    input_w: int,
+    cfg: DictConfig,
+) -> None:
+    """Run a dummy infer_action to trigger torch.compile warmup."""
+    warmup_t0 = time.perf_counter()
+    dummy_image = torch.zeros(
+        (1, 3, input_h, input_w),
+        device=model.device,
+        dtype=model.torch_dtype,
+    )
+    with torch.no_grad():
+        dummy_context, dummy_context_mask = model.encode_prompt(
+            DEFAULT_PROMPT.format(task="warmup")
+        )
+    proprio_dim = model.proprio_dim
+    dummy_proprio = (
+        torch.zeros((1, proprio_dim), dtype=torch.float32)
+        if proprio_dim is not None
+        else None
+    )
+    num_inference_steps_cfg = cfg.EVALUATION.get("num_inference_steps", None)
+    if num_inference_steps_cfg is None:
+        num_inference_steps = int(cfg.get("eval_num_inference_steps", 20))
+    else:
+        num_inference_steps = int(num_inference_steps_cfg)
+    with torch.no_grad():
+        model.infer_action(
+            prompt=None,
+            input_image=dummy_image,
+            action_horizon=action_horizon,
+            proprio=dummy_proprio,
+            context=dummy_context,
+            context_mask=dummy_context_mask,
+            num_inference_steps=num_inference_steps,
+            sigma_shift=(
+                None
+                if cfg.EVALUATION.get("sigma_shift") is None
+                else float(cfg.EVALUATION.get("sigma_shift"))
+            ),
+            seed=0,
+            rand_device=str(cfg.EVALUATION.get("rand_device", "cpu")),
+            tiled=bool(cfg.EVALUATION.get("tiled", False)),
+        )
+    warmup_elapsed = time.perf_counter() - warmup_t0
+    logging.info("torch.compile warmup done in %.2f s", warmup_elapsed)
+
+
 def _predict_action_chunk(
     obs: dict,
     task_description: str,
@@ -435,7 +486,9 @@ def _predict_action_chunk(
     input_w: int,
     input_h: int,
     model_device: str,
-) -> tuple[np.ndarray, dict, Optional[list[Image.Image]]]:
+    cached_context: Optional[torch.Tensor] = None,
+    cached_context_mask: Optional[torch.Tensor] = None,
+) -> tuple[np.ndarray, dict, Optional[list[Image.Image]], float]:
     num_inference_steps_cfg = cfg.EVALUATION.get("num_inference_steps", None)
     if num_inference_steps_cfg is None:
         num_inference_steps = int(cfg.get("eval_num_inference_steps", 20))
@@ -470,7 +523,6 @@ def _predict_action_chunk(
         print(f"Saved model_input to {debug_dir / 'model_input.png'}")
 
     infer_kwargs = {
-        "prompt": prompt,
         "input_image": image,
         "action_horizon": action_horizon,
         "negative_prompt": str(cfg.EVALUATION.get("negative_prompt", "")),
@@ -486,6 +538,13 @@ def _predict_action_chunk(
         "rand_device": str(cfg.EVALUATION.get("rand_device", "cpu")),
         "tiled": bool(cfg.EVALUATION.get("tiled", False)),
     }
+    # Prompt caching: reuse pre-encoded context if available
+    if cached_context is not None and cached_context_mask is not None:
+        infer_kwargs["prompt"] = None
+        infer_kwargs["context"] = cached_context
+        infer_kwargs["context_mask"] = cached_context_mask
+    else:
+        infer_kwargs["prompt"] = prompt
     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
     predicted_future_frames = None
     if visualize_future_video:
@@ -501,6 +560,7 @@ def _predict_action_chunk(
 
     with torch.no_grad():
         t_infer_start = time.time()
+        infer_t0 = time.perf_counter()
         if visualize_future_video:
             pred = model.infer_joint(**infer_kwargs)
             predicted_future_frames = _select_predicted_future_frames(pred["video"], cfg)
@@ -508,6 +568,7 @@ def _predict_action_chunk(
             pred = model.infer_action(**infer_kwargs)
         t_infer_end = time.time()
         logging.info("_predict_action_chunk model inference took %.4f s", t_infer_end - t_infer_start)
+        infer_elapsed = time.perf_counter() - infer_t0
     action = pred["action"]  # [T, D]
 
     action = _denormalize_action(action, processor)[0]  # [T, D]
@@ -522,7 +583,7 @@ def _predict_action_chunk(
     if DEBUG:
         import ipdb; ipdb.set_trace();
         import os; os._exit(1);
-    return action, imgs, predicted_future_frames
+    return action, imgs, predicted_future_frames, infer_elapsed
 
 
 def _get_max_steps(task_suite_name: str) -> int:
@@ -551,7 +612,9 @@ def run_single_episode(
     input_w: int,
     input_h: int,
     model_device: str,
-) -> tuple[bool, list, list[dict[str, Any]], Optional[float]]:
+    cached_context: Optional[torch.Tensor] = None,
+    cached_context_mask: Optional[torch.Tensor] = None,
+) -> tuple[bool, list, list[dict[str, Any]], Optional[float], float]:
     max_steps = _get_max_steps(cfg.EVALUATION.task_suite_name)
     replan_steps = int(cfg.EVALUATION.get("replan_steps", 5))
     num_steps_wait = int(cfg.EVALUATION.get("num_steps_wait", 5))
@@ -608,6 +671,7 @@ def run_single_episode(
     current_predicted_future_clip: Optional[dict[str, Any]] = None
     current_replan_step = 0
     current_replan_idx = -1
+    episode_infer_time = 0.0
 
     t = 0
     done = False
@@ -620,7 +684,7 @@ def run_single_episode(
             continue
 
         if len(pending_actions) == 0:
-            action_chunk, imgs, predicted_future_frames = _predict_action_chunk(
+            action_chunk, imgs, predicted_future_frames, infer_elapsed = _predict_action_chunk(
                 obs=obs,
                 task_description=task_description,
                 model=model,
@@ -630,7 +694,10 @@ def run_single_episode(
                 input_w=input_w,
                 input_h=input_h,
                 model_device=model_device,
+                cached_context=cached_context,
+                cached_context_mask=cached_context_mask,
             )
+            episode_infer_time += infer_elapsed
             if predicted_future_frames is not None:
                 current_replan_idx += 1
                 current_predicted_future_clip = {
@@ -710,7 +777,7 @@ def run_single_episode(
     episode_mean_psnr = (
         float(np.mean(episode_future_clip_psnr)) if len(episode_future_clip_psnr) > 0 else None
     )
-    return bool(done), replay_images, predicted_future_video_clips, episode_mean_psnr
+    return bool(done), replay_images, predicted_future_video_clips, episode_mean_psnr, episode_infer_time
 
 
 def run_single_task(
@@ -729,18 +796,27 @@ def run_single_task(
 ) -> dict:
     env, task_description = get_libero_env(task, LIBERO_ENV_RESOLUTION, cfg.get("seed"))
     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
+
+    # Prompt caching: encode prompt once per task and reuse across all trials
+    prompt_template = DEFAULT_PROMPT
+    prompt = prompt_template.format(task=task_description)
+    with torch.no_grad():
+        cached_context, cached_context_mask = model.encode_prompt(prompt)
+    logging.info("Cached prompt encoding for task: %s", task_description)
+
     results = {
         "successes": 0,
         "failure_episodes": [],
         "success_episodes": [],
         "task_description": task_description,
+        "episode_infer_times": [],
     }
     if visualize_future_video:
         results["episode_future_video_psnr"] = []
         results["future_video_psnr_mean"] = None
 
     for trial_idx in range(int(cfg.EVALUATION.num_trials)):
-        success, replay_images, predicted_future_video_clips, episode_mean_psnr = run_single_episode(
+        success, replay_images, predicted_future_video_clips, episode_mean_psnr, episode_infer_time = run_single_episode(
             env=env,
             initial_state=initial_states[trial_idx],
             task_description=task_description,
@@ -752,7 +828,10 @@ def run_single_task(
             input_w=input_w,
             input_h=input_h,
             model_device=model_device,
+            cached_context=cached_context,
+            cached_context_mask=cached_context_mask,
         )
+        results["episode_infer_times"].append(episode_infer_time)
         if success:
             results["successes"] += 1
             results["success_episodes"].append(trial_idx)
@@ -804,6 +883,17 @@ def run_single_task(
         valid_episode_psnr = [x for x in results["episode_future_video_psnr"] if x is not None]
         if len(valid_episode_psnr) > 0:
             results["future_video_psnr_mean"] = float(np.mean(valid_episode_psnr))
+
+    # Timing summary
+    infer_times = results["episode_infer_times"]
+    if infer_times:
+        results["total_infer_time"] = float(sum(infer_times))
+        results["mean_episode_infer_time"] = float(np.mean(infer_times))
+        logging.info(
+            "Inference timing: total=%.2fs, mean_per_episode=%.2fs",
+            results["total_infer_time"],
+            results["mean_episode_infer_time"],
+        )
     return results
 
 
@@ -852,6 +942,9 @@ def eval_single_process(cfg: DictConfig):
         raise ValueError(f"data.train.video_size must be [H, W], got {video_size}")
     input_h = int(video_size[0])
     input_w = int(video_size[1])
+
+    # Warmup: trigger torch.compile before real evaluation
+    _warmup_model(model, action_horizon, input_h, input_w, cfg)
     concat_multi_camera = cfg.data.train.get("concat_multi_camera", None)
     shape_meta_images = [meta["shape"] for meta in processor.shape_meta["images"]]
 
@@ -915,6 +1008,9 @@ def eval_single_process(cfg: DictConfig):
     if results.get("future_video_psnr_mean") is not None:
         print(f"Task {cfg.EVALUATION.task_id} future-video PSNR mean: {results['future_video_psnr_mean']:.4f}")
     print(f"Time taken: {results['duration']:.2f} seconds")
+    if results.get("mean_episode_infer_time") is not None:
+        print(f"Mean inference time per episode: {results['mean_episode_infer_time']:.3f} s")
+        print(f"Total inference time: {results['total_infer_time']:.2f} s")
     return results
 
 
