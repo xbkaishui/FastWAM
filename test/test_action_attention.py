@@ -49,9 +49,14 @@ CONFIG_NAME = "sim_libero.yaml"
 TASK_OVERRIDE = "libero_uncond_2cam224_1e-4"
 CKPT_PATH = "/root/autodl-fs/ckpts/fast_wam/runs/libero_uncond_2cam224_1e-4/2026-06-04_13-50-48/checkpoints/weights/step_028930.pt"
 DATASET_STATS_PATH = "/root/autodl-fs/ckpts/fast_wam/runs/libero_uncond_2cam224_1e-4/2026-06-04_13-50-48/dataset_stats.json"
+
 DEVICE = "cuda"
 NUM_INFERENCE_STEPS = 10  # 减少步数加速测试
 SEED = 42
+
+input_image_path = "/root/foresee/FastWAM/debug_images/model_input.png"
+dummy_state = np.array([-0.2325, -0.0571,  0.5881,  0.5704,  0.0101,  0.0864,  0.8822, -0.8842]).astype(np.float32)
+instruction = "open the middle drawer of the cabinet"
 
 OUTPUT_DIR = Path("test/visualize/attention_analysis")
 
@@ -608,8 +613,9 @@ def main():
 
     # --- 准备输入数据 ---
     print("\n[4/5] 准备测试输入...")
-    # 读取真实的模型输入图片
-    input_image_path = "/root/foresee/FastWAM/debug_images/model_input.png"
+    # 读取真实的模型输入图片 TODO mock input
+    
+    
     print(f"  读取输入图片: {input_image_path}")
     pil_img = Image.open(input_image_path).convert("RGB")
     dummy_image = np.asarray(pil_img, dtype=np.uint8)  # [H, W, 3]
@@ -622,7 +628,7 @@ def main():
 
     # State (proprio)
     proprio_dim = int(cfg.data.train.processor.proprio_output_dim)
-    dummy_state = np.array([-0.2325, -0.0571,  0.5881,  0.5704,  0.0101,  0.0864,  0.8822, -0.8842]).astype(np.float32)
+    
     # 通过 processor 归一化 state
     state_meta = processor.shape_meta["state"]
     state_key = state_meta[0]["key"]
@@ -634,7 +640,6 @@ def main():
         proprio = proprio.squeeze(0)
 
     # Prompt
-    instruction = "open the middle drawer of the cabinet"
     prompt = DEFAULT_PROMPT.format(task=instruction)
 
     # Action horizon
@@ -650,10 +655,11 @@ def main():
     
     # 只捕获部分层（每5层一个，减少内存）
     capture_layers = list(range(0, model.mot.num_layers, 1))  # [0, 5, 10, 15, 20, 25]
-    capturer = AttentionCapturer(model, capture_layers=capture_layers)
-    capturer.install_hooks()
-    capturer.patch_infer_action()
-    capturer.start_capture()
+    # TODO enable later
+    # capturer = AttentionCapturer(model, capture_layers=capture_layers)
+    # capturer.install_hooks()
+    # capturer.patch_infer_action()
+    # capturer.start_capture()
 
     t0 = time.perf_counter()
     with torch.no_grad():

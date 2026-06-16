@@ -16,7 +16,11 @@ def flash_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, num_heads
         q = rearrange(q, "b s (n d) -> b n s d", n=num_heads)
         k = rearrange(k, "b s (n d) -> b n s d", n=num_heads)
         v = rearrange(v, "b s (n d) -> b n s d", n=num_heads)
-        x = F.scaled_dot_product_attention(q, k, v, attn_mask=ctx_mask)
+        # Fast path: if ctx_mask is all True, use the fast path
+        if ctx_mask is not None and ctx_mask.all():
+            x = F.scaled_dot_product_attention(q, k, v)
+        else:
+            x = F.scaled_dot_product_attention(q, k, v, attn_mask=ctx_mask)
         x = rearrange(x, "b n s d -> b s (n d)", n=num_heads)
         return x
     else:

@@ -1,3 +1,4 @@
+import time
 from typing import Any, Optional, Sequence, Union
 
 import torch
@@ -713,13 +714,21 @@ class FastWAM(torch.nn.Module):
         video_kv_cache: list[dict[str, torch.Tensor]],
         attention_mask: torch.Tensor,
         video_seq_len: int,
+        enable_timing: bool = False,
     ) -> torch.Tensor:
+        _t = lambda: time.time()
+        _log_t = lambda tag, t0: logger.info(f"[_predict_action_noise_with_cache] {tag}: {time.time() - t0:.4f}s") if enable_timing else None
+
+        t0 = _t()
         action_pre = self.action_expert.pre_dit(
             action_tokens=latents_action,
             timestep=timestep_action,
             context=context,
             context_mask=context_mask,
         )
+        _log_t("action_expert.pre_dit", t0)
+
+        t0 = _t()
         action_tokens = self.mot.forward_action_with_video_cache(
             action_tokens=action_pre["tokens"],
             action_freqs=action_pre["freqs"],
@@ -732,7 +741,12 @@ class FastWAM(torch.nn.Module):
             attention_mask=attention_mask,
             video_seq_len=video_seq_len,
         )
-        return self.action_expert.post_dit(action_tokens, action_pre)
+        _log_t("mot.forward_action_with_video_cache", t0)
+
+        t0 = _t()
+        result = self.action_expert.post_dit(action_tokens, action_pre)
+        _log_t("action_expert.post_dit", t0)
+        return result
 
     @torch.no_grad()
     def infer_joint(
@@ -753,11 +767,16 @@ class FastWAM(torch.nn.Module):
         rand_device: str = "cpu",
         tiled: bool = False,
         test_action_with_infer_action: bool = True,
+        enable_timing: bool = False,
     ) -> dict[str, Any]:
         self.eval()
+        _t = lambda: time.time()
+        _log_t = lambda tag, t0: logger.info(f"[infer_joint] {tag}: {time.time() - t0:.4f}s") if enable_timing else None
+
         if test_action_with_infer_action:
             if seed is None:
                 raise ValueError("`test_action_with_infer_action=True` requires non-null `seed`.")
+            t0 = _t()
             action_only_out = self.infer_action(
                 prompt=prompt,
                 input_image=input_image.clone(),
@@ -771,7 +790,9 @@ class FastWAM(torch.nn.Module):
                 tiled=tiled,
                 proprio=proprio.clone() if proprio is not None else None,
             )["action"]
+            _log_t("infer_action (consistency check)", t0)
         
+        t0 = _t()
         if input_image.ndim == 3:
             input_image = input_image.unsqueeze(0)
         if input_image.ndim != 4 or input_image.shape[0] != 1 or input_image.shape[1] != 3:
@@ -809,7 +830,9 @@ class FastWAM(torch.nn.Module):
             if proprio.shape[1] != self.proprio_dim:
                 raise ValueError(f"`proprio` last dim must be {self.proprio_dim}, got {proprio.shape[1]}")
             proprio = proprio.to(device=self.device, dtype=self.torch_dtype)
+        _log_t("input validation & preprocessing", t0)
 
+        t0 = _t()
         latent_t = (num_video_frames - 1) // self.vae.temporal_downsample_factor + 1
         latent_h = height // self.vae.upsampling_factor
         latent_w = width // self.vae.upsampling_factor
@@ -828,12 +851,16 @@ class FastWAM(torch.nn.Module):
             device=rand_device,
             dtype=torch.float32,
         ).to(device=self.device, dtype=self.torch_dtype)
+        _log_t("latent noise initialization", t0)
 
+        t0 = _t()
         input_image = input_image.to(device=self.device, dtype=self.torch_dtype)
         first_frame_latents = self._encode_input_image_latents_tensor(input_image=input_image, tiled=tiled)
         latents_video[:, :, 0:1] = first_frame_latents.clone()
         fuse_flag = bool(getattr(self.video_expert, "fuse_vae_embedding_in_latents", False))
+        _log_t("VAE encode first frame", t0)
 
+        t0 = _t()
         use_prompt = prompt is not None
         use_context = context is not None or context_mask is not None
         if use_prompt and use_context:
@@ -862,7 +889,9 @@ class FastWAM(torch.nn.Module):
                 context_mask=context_mask,
                 proprio=proprio,
             )
+        _log_t("context preparation", t0)
 
+        t0 = _t()
         infer_timesteps_video, infer_deltas_video = self.infer_video_scheduler.build_inference_schedule(
             num_inference_steps=num_inference_steps,
             device=self.device,
@@ -875,12 +904,16 @@ class FastWAM(torch.nn.Module):
             dtype=latents_action.dtype,
             shift_override=sigma_shift,
         )
-        for step_t_video, step_delta_video, step_t_action, step_delta_action in zip(
+        _log_t("build inference schedule", t0)
+
+        t_denoise_start = _t()
+        for step_idx, (step_t_video, step_delta_video, step_t_action, step_delta_action) in enumerate(zip(
             infer_timesteps_video,
             infer_deltas_video,
             infer_timesteps_action,
             infer_deltas_action,
-        ):
+        )):
+            t_step = _t()
             timestep_video = step_t_video.unsqueeze(0).to(dtype=latents_video.dtype, device=self.device)
             timestep_action = step_t_action.unsqueeze(0).to(dtype=latents_action.dtype, device=self.device)
 
@@ -900,7 +933,10 @@ class FastWAM(torch.nn.Module):
             latents_video = self.infer_video_scheduler.step(pred_video, step_delta_video, latents_video)
             latents_action = self.infer_action_scheduler.step(pred_action, step_delta_action, latents_action)
             latents_video[:, :, 0:1] = first_frame_latents.clone()
+            _log_t(f"denoise step [{step_idx}/{num_inference_steps}]", t_step)
+        _log_t(f"denoise loop total ({num_inference_steps} steps)", t_denoise_start)
 
+        t0 = _t()
         action_out = latents_action[0].detach().to(device="cpu", dtype=torch.float32)
         if test_action_with_infer_action:
             if not torch.allclose(action_out, action_only_out, atol=1e-2, rtol=1e-2):
@@ -908,9 +944,14 @@ class FastWAM(torch.nn.Module):
                 logger.warning(
                     f"Action from infer_joint and infer_action differ with max abs diff {max_abs_diff:.6f}. "
                 )
+        _log_t("action output & consistency check", t0)
+
+        t0 = _t()
+        video_out = self._decode_latents(latents_video, tiled=tiled)
+        _log_t("VAE decode video", t0)
 
         return {
-            "video": self._decode_latents(latents_video, tiled=tiled),
+            "video": video_out,
             "action": action_out,
         }
 
@@ -930,13 +971,17 @@ class FastWAM(torch.nn.Module):
         seed: Optional[int] = None,
         rand_device: str = "cpu",
         tiled: bool = False,
+        enable_timing: bool = False,
     ) -> dict[str, Any]:
         self.eval()
+        _t = lambda: time.time()
+        _log_t = lambda tag, t0: logger.info(f"[infer_action] {tag}: {time.time() - t0:.4f}s") if enable_timing else None
         if str(getattr(self.video_expert, "video_attention_mask_mode", "")) != "first_frame_causal":
             raise ValueError(
                 "`infer_action` requires `video_attention_mask_mode='first_frame_causal'`."
             )
 
+        t0 = _t()
         if input_image.ndim == 3:
             input_image = input_image.unsqueeze(0)
         if input_image.ndim != 4 or input_image.shape[0] != 1 or input_image.shape[1] != 3:
@@ -968,11 +1013,15 @@ class FastWAM(torch.nn.Module):
             device=rand_device,
             dtype=torch.float32,
         ).to(device=self.device, dtype=self.torch_dtype)
+        _log_t("input validation & noise init", t0)
 
+        t0 = _t()
         input_image = input_image.to(device=self.device, dtype=self.torch_dtype)
         first_frame_latents = self._encode_input_image_latents_tensor(input_image=input_image, tiled=tiled)
         fuse_flag = bool(getattr(self.video_expert, "fuse_vae_embedding_in_latents", False))
+        _log_t("VAE encode first frame", t0)
 
+        t0 = _t()
         use_prompt = prompt is not None
         use_context = context is not None or context_mask is not None
         if use_prompt and use_context:
@@ -1001,7 +1050,9 @@ class FastWAM(torch.nn.Module):
                 context_mask=context_mask,
                 proprio=proprio,
             )
+        _log_t("context preparation", t0)
 
+        t0 = _t()
         timestep_video = torch.zeros(
             (first_frame_latents.shape[0],),
             dtype=first_frame_latents.dtype,
@@ -1016,7 +1067,6 @@ class FastWAM(torch.nn.Module):
             fuse_vae_embedding_in_latents=fuse_flag,
         )
         video_seq_len = int(video_pre["tokens"].shape[1])
-        print(f'video seq len {video_seq_len}')
         attention_mask = self._build_mot_attention_mask(
             video_seq_len=video_seq_len,
             action_seq_len=latents_action.shape[1],
@@ -1033,14 +1083,20 @@ class FastWAM(torch.nn.Module):
             },
             video_attention_mask=attention_mask[:video_seq_len, :video_seq_len],
         )
+        _log_t("video pre_dit & KV cache prefill", t0)
 
+        t0 = _t()
         infer_timesteps_action, infer_deltas_action = self.infer_action_scheduler.build_inference_schedule(
             num_inference_steps=num_inference_steps,
             device=self.device,
             dtype=latents_action.dtype,
             shift_override=sigma_shift,
         )
-        for step_t_action, step_delta_action in zip(infer_timesteps_action, infer_deltas_action):
+        _log_t("build inference schedule", t0)
+
+        t_denoise_start = _t()
+        for step_idx, (step_t_action, step_delta_action) in enumerate(zip(infer_timesteps_action, infer_deltas_action)):
+            t_step = _t()
             timestep_action = step_t_action.unsqueeze(0).to(dtype=latents_action.dtype, device=self.device)
 
             pred_action_posi = self._predict_action_noise_with_cache(
@@ -1051,10 +1107,13 @@ class FastWAM(torch.nn.Module):
                 video_kv_cache=video_kv_cache,
                 attention_mask=attention_mask,
                 video_seq_len=video_seq_len,
+                enable_timing=enable_timing,
             )
             pred_action = pred_action_posi
 
             latents_action = self.infer_action_scheduler.step(pred_action, step_delta_action, latents_action)
+            _log_t(f"denoise step [{step_idx}/{num_inference_steps}]", t_step)
+        _log_t(f"denoise loop total ({num_inference_steps} steps)", t_denoise_start)
 
         return {
             "action": latents_action[0].detach().to(device="cpu", dtype=torch.float32),
@@ -1079,6 +1138,7 @@ class FastWAM(torch.nn.Module):
         seed: Optional[int] = None,
         rand_device: str = "cpu",
         tiled: bool = False,
+        enable_timing: bool = False,
     ):
         return self.infer_joint(
             prompt=prompt,
@@ -1096,6 +1156,7 @@ class FastWAM(torch.nn.Module):
             seed=seed,
             rand_device=rand_device,
             tiled=tiled,
+            enable_timing=enable_timing,
         )
 
     def save_checkpoint(self, path, optimizer=None, step=None):

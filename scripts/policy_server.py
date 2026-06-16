@@ -556,6 +556,7 @@ class FastWAMPolicy:
             "seed": self.seed,
             "rand_device": self.rand_device,
             "tiled": self.tiled,
+            "enable_timing": True,
         }
 
         # Check if model.infer_action accepts num_video_frames (for joint models)
