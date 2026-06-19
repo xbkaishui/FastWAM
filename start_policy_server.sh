@@ -4,7 +4,7 @@
 
 # 默认参数
 CONFIG="${CONFIG:-sim_libero.yaml}"
-CKPT="${CKPT:-/root/autodl-fs/ckpts/fast_wam/runs/libero_uncond_2cam224_1e-4/2026-06-04_13-50-48/checkpoints/weights/step_028000.pt}"
+CKPT="${CKPT:-/root/autodl-fs/ckpts/fast_wam/runs/libero_uncond_2cam224_1e-4/2026-06-04_13-50-48/checkpoints/weights/step_028930.pt}"
 DATASET_STATS="${DATASET_STATS:-/root/autodl-fs/ckpts/fast_wam/runs/libero_uncond_2cam224_1e-4/2026-06-04_13-50-48/dataset_stats.json}"
 TASK="${TASK:-libero_uncond_2cam224_1e-4}"
 DEVICE="${DEVICE:-cuda}"

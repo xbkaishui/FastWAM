@@ -16,8 +16,8 @@ def test_model_infer_random_data():
     host = "127.0.0.1"
     port = 6006
     # https://u673024-ae2e-cd2077e9.westc.seetacloud.com:8443
-    host = "connect.westc.seetacloud.com"
-    port = 15245
+    # host = "connect.westc.seetacloud.com"
+    # port = 15245
     model_monitor = ModelMonitor(host=host, port=port)
     model_monitor.start()
 
@@ -26,7 +26,6 @@ def test_model_infer_random_data():
         "observation.images.head_left": np.random.rand(1, 3, 256, 256).astype(np.float32),
         "observation.images.hand_right": np.random.rand(1, 3, 256, 256).astype(np.float32),
         "observation.images.hand_left": np.random.rand(1, 3, 256, 256).astype(np.float32),
-        "observation.images.orbbec": np.random.rand(1, 3, 256, 256).astype(np.float32),
         "observation.state": np.random.rand(1, 28).astype(np.float32),
         "idx": 1,
         "task": "right_pangceban",
@@ -48,6 +47,48 @@ def test_model_infer_random_data():
     with open(action_dump_path, "wb") as f:
         pickle.dump(latest_action, f, protocol=pickle.HIGHEST_PROTOCOL)
     print(f"Action dumped to {action_dump_path}")
+    
+    model_monitor.reset()
+    
+
+def test_read_dataset_and_infer():
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    from tqdm import tqdm
+
+    dataset_path = "/root/autodl-fs/datasets/test/pangceban_left_right_data_20260602_658_delta_action"
+    dataset = LeRobotDataset(repo_id="replay", root=dataset_path, video_backend="pyav", episodes=[15])
+    DURATION_TIME = 300
+    EVAL_TIME = 10
+    n = min(DURATION_TIME, len(dataset))
+    
+    host = "127.0.0.1"
+    port = 6006
+    # host = "connect.westc.seetacloud.com"
+    # port = 15245
+    model_monitor = ModelMonitor(host=host, port=port)
+    model_monitor.start()
+    
+
+    for i in tqdm(range(n)):
+        if i % EVAL_TIME != 0:
+            continue
+        temp = dataset[i]
+        print(f'eval step {i}')
+        frame = {
+            "observation.images.head_right": np.array(temp["observation.images.head_right"]),
+            "observation.images.head_left": np.array(temp["observation.images.head_left"]),
+            "observation.images.hand_right": np.array(temp["observation.images.hand_right"]),
+            "observation.images.hand_left": np.array(temp["observation.images.hand_left"]),
+            "observation.state": np.array(temp["observation.state"]),
+            "control": np.array(temp["control"]),
+            "idx": i,
+            "task": "right_pangceban",
+        }
+        model_monitor.send_observation(frame)
+        time.sleep(3)
+    
+    model_monitor.reset()
+    ...
  
 def test_model_infer_libero_image():
     """从本地图片读取，测试 LIBERO 任务推理。"""
@@ -98,5 +139,6 @@ def test_model_infer_libero_image():
 
 
 if __name__ == "__main__":
-    test_model_infer_random_data()  # 随机数据推理
+    test_read_dataset_and_infer() # 从数据集里面读取数据并推理
+    # test_model_infer_random_data()  # 随机数据推理
     # test_model_infer_libero_image()  # 本地图片推理

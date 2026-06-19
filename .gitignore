@@ -246,3 +246,4 @@ onelogger.log
 nohup.out
 debug_images
 test/visualize/attention_analysis_libero/
+predicted_videos/

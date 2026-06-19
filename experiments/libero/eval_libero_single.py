@@ -364,6 +364,7 @@ def _select_predicted_future_frames(pred_video: list[Image.Image], cfg: DictConf
         raise ValueError("`infer_joint` returned an empty predicted video.")
 
     replan_steps = int(cfg.EVALUATION.get("replan_steps", 5))
+    import ipdb; ipdb.set_trace()
     action_video_freq_ratio = int(cfg.data.train.action_video_freq_ratio)
     num_future_frames = replan_steps // action_video_freq_ratio
     keep_frames = 1 + num_future_frames
@@ -498,7 +499,7 @@ def _predict_action_chunk(
         with open(pkl_path, "wb") as f:
             pickle.dump(infer_kwargs, f)
         logging.info("Saved infer_kwargs to %s", pkl_path)
-
+    # import ipdb; ipdb.set_trace();
     with torch.no_grad():
         t_infer_start = time.time()
         if visualize_future_video:

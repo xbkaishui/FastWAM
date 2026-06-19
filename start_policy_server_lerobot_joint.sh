@@ -41,4 +41,6 @@ python scripts/policy_server.py \
     --device "${DEVICE}" \
     --gpu_id "${GPU_ID}" \
     --port "${PORT}" \
-    --host "${HOST}"
+    --host "${HOST}" \
+    --infer_mode joint \
+    --replan_steps 10 

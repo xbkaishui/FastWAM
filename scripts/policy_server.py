@@ -47,9 +47,11 @@ import os
 import sys
 import time
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import cv2
 import numpy as np
 import torch
 from PIL import Image
@@ -201,10 +203,15 @@ class FastWAMPolicy:
         device: str = "cuda",
         port: int = 8765,
         save_debug_images: bool = False,
+        infer_mode: str = "action",
+        replan_steps: Optional[int] = None,
     ) -> None:
         self.cfg = cfg
         self.device = device
         self.save_debug_images = save_debug_images
+        if infer_mode not in ("action", "joint"):
+            raise ValueError(f"infer_mode must be 'action' or 'joint', got '{infer_mode}'")
+        self.infer_mode = infer_mode
 
         # --- Model dtype ---
         mixed_precision = str(cfg.get("mixed_precision", "bf16"))
@@ -234,7 +241,12 @@ class FastWAMPolicy:
             self.action_horizon = int(action_horizon_cfg)
 
         replan_cfg = eval_cfg.get("replan_steps", None)
-        self.replan_steps = int(replan_cfg) if replan_cfg is not None else self.action_horizon
+        if replan_steps is not None:
+            self.replan_steps = int(replan_steps)
+        elif replan_cfg is not None:
+            self.replan_steps = int(replan_cfg)
+        else:
+            self.replan_steps = self.action_horizon
         self.replan_steps = max(1, min(self.replan_steps, self.action_horizon))
 
         num_inf_steps_cfg = eval_cfg.get("num_inference_steps", None)
@@ -270,15 +282,20 @@ class FastWAMPolicy:
         )
 
         # --- Num video frames (needed for joint/fastwam_joint models) ---
-        action_video_freq_ratio = int(cfg.data.train.get("action_video_freq_ratio", 1))
+        self._action_video_freq_ratio = int(cfg.data.train.get("action_video_freq_ratio", 1))
         num_frames = int(cfg.data.train.num_frames)
-        self._num_video_frames = (num_frames - 1) // action_video_freq_ratio + 1
+        self._num_video_frames = (num_frames - 1) // self._action_video_freq_ratio + 1
 
         self._step_count = 0
+        self._video_buffer: list = []  # buffer for predicted video frames from infer_joint
+        self._video_flush_interval = 100  # flush to disk every N infer calls
+        self._video_save_dir = PROJECT_ROOT / "predicted_videos"
+        self._video_save_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(
-            "Policy ready | action_horizon=%d | replan_steps=%d | "
+            "Policy ready | infer_mode=%s | action_horizon=%d | replan_steps=%d | "
             "num_inference_steps=%d | image_size=(%d,%d) | dtype=%s",
+            self.infer_mode,
             self.action_horizon,
             self.replan_steps,
             self.num_inference_steps,
@@ -559,18 +576,33 @@ class FastWAMPolicy:
             "enable_timing": True,
         }
 
-        # Check if model.infer_action accepts num_video_frames (for joint models)
-        if "num_video_frames" in inspect.signature(self.model.infer_action).parameters:
-            infer_kwargs["num_video_frames"] = self._num_video_frames
-
-        # Run inference
+        # Run inference based on infer_mode
         with torch.no_grad():
-            pred = self.model.infer_action(**infer_kwargs)
+            if self.infer_mode == "joint":
+                infer_kwargs["num_video_frames"] = self._num_video_frames
+                infer_kwargs["action"] = None
+                infer_kwargs["test_action_with_infer_action"] = False
+                pred = self.model.infer_joint(**infer_kwargs)
+                # Buffer predicted video frames (select replan-window frames)
+                if "video" in pred and pred["video"] is not None:
+                    selected_frames = self._select_future_frames(pred["video"])
+                    self._video_buffer.append({
+                        "step": self._step_count,
+                        "frames": selected_frames,
+                    })
+                    if len(self._video_buffer) >= self._video_flush_interval:
+                        self._flush_video_buffer()
+            else:
+                # Default: infer_action mode
+                if "num_video_frames" in inspect.signature(self.model.infer_action).parameters:
+                    infer_kwargs["num_video_frames"] = self._num_video_frames
+                pred = self.model.infer_action(**infer_kwargs)
 
         # Denormalize action
         action_tensor = pred["action"]  # [T, D]
         action_chunk = self._denormalize_action(action_tensor)  # [T, D]
-        return action_chunk
+        # Only return the first replan_steps actions
+        return action_chunk[:self.replan_steps]
 
     # ------------------------------------------------------------------
     # WebSocket interface
@@ -627,8 +659,59 @@ class FastWAMPolicy:
             "success_proba": torch.tensor([1.0]),
         }
 
+    def _select_future_frames(self, pred_video: list) -> list:
+        """Select predicted future frames within the replan window.
+
+        Same logic as eval_libero_single._select_predicted_future_frames:
+        keep the first frame + num_future_frames based on replan_steps / action_video_freq_ratio.
+        """
+        if len(pred_video) == 0:
+            return []
+        num_future_frames = self.replan_steps // self._action_video_freq_ratio
+        keep_frames = 1 + num_future_frames
+        return list(pred_video[:keep_frames])
+
+    def _flush_video_buffer(self) -> None:
+        """Save all buffered predicted video frames as a single MP4 video."""
+        if len(self._video_buffer) == 0:
+            return
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        step_start = self._video_buffer[0]["step"]
+        step_end = self._video_buffer[-1]["step"]
+        video_path = str(self._video_save_dir / f"predicted_{timestamp}_steps{step_start}-{step_end}.mp4")
+
+        # Collect all frames into a single sequence
+        all_rgb_frames = []
+        for entry in self._video_buffer:
+            for frame in entry["frames"]:
+                if isinstance(frame, Image.Image):
+                    all_rgb_frames.append(np.asarray(frame.convert("RGB"), dtype=np.uint8))
+                else:
+                    all_rgb_frames.append(np.asarray(frame, dtype=np.uint8))
+
+        if len(all_rgb_frames) == 0:
+            self._video_buffer.clear()
+            return
+
+        h, w = all_rgb_frames[0].shape[:2]
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(video_path, fourcc, 10, (w, h))
+        for rgb in all_rgb_frames:
+            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            writer.write(bgr)
+        writer.release()
+
+        logger.info(
+            "Flushed %d clips (%d frames) to %s",
+            len(self._video_buffer), len(all_rgb_frames), video_path,
+        )
+        self._video_buffer.clear()
+
     def reset(self) -> None:
         """Reset policy internal state."""
+        # Flush remaining video buffer before reset
+        if self.infer_mode == "joint" and len(self._video_buffer) > 0:
+            self._flush_video_buffer()
         self._step_count = 0
         logger.info("Policy reset.")
 
@@ -647,6 +730,8 @@ def deploy(
     port: int = 8765,
     host: str = "0.0.0.0",
     save_debug_images: bool = False,
+    infer_mode: str = "action",
+    replan_steps: Optional[int] = None,
 ) -> None:
     """Deploy the FastWAM policy as a WebSocket server.
 
@@ -680,6 +765,8 @@ def deploy(
         dataset_stats_path=stats_path,
         device=device,
         save_debug_images=save_debug_images,
+        infer_mode=infer_mode,
+        replan_steps=replan_steps,
     )
 
     # Start server
@@ -757,6 +844,19 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Save preprocessed input images to debug_images/ for debugging",
     )
+    parser.add_argument(
+        "--infer_mode",
+        type=str,
+        choices=["action", "joint"],
+        default="action",
+        help="Inference mode: 'action' (action-only, faster) or 'joint' (video+action jointly)",
+    )
+    parser.add_argument(
+        "--replan_steps",
+        type=int,
+        default=None,
+        help="Number of action steps to return per inference call (default: action_horizon from config)",
+    )
     return parser.parse_args()
 
 
@@ -776,4 +876,6 @@ if __name__ == "__main__":
         port=args.port,
         host=args.host,
         save_debug_images=args.save_debug_images,
+        infer_mode=args.infer_mode,
+        replan_steps=args.replan_steps,
     )
