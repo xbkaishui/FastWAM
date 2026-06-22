@@ -602,7 +602,7 @@ class FastWAMPolicy:
         action_tensor = pred["action"]  # [T, D]
         action_chunk = self._denormalize_action(action_tensor)  # [T, D]
         # Only return the first replan_steps actions
-        return action_chunk[:self.replan_steps]
+        return action_chunk
 
     # ------------------------------------------------------------------
     # WebSocket interface

@@ -139,6 +139,6 @@ def test_model_infer_libero_image():
 
 
 if __name__ == "__main__":
-    test_read_dataset_and_infer() # 从数据集里面读取数据并推理
-    # test_model_infer_random_data()  # 随机数据推理
+    # test_read_dataset_and_infer() # 从数据集里面读取数据并推理
+    test_model_infer_random_data()  # 随机数据推理
     # test_model_infer_libero_image()  # 本地图片推理

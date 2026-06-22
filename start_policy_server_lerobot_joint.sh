@@ -5,15 +5,15 @@
 # 默认参数
 CONFIG="${CONFIG:-sim_pangceban.yaml}"
 # normal checkpoint
-CKPT="${CKPT:-/root/autodl-fs/ckpts/fast_wam/runs/pangceban_uncond_2cam224_1e-4/2026-06-11_08-24-59/checkpoints/weights/step_024000.pt}"
-DATASET_STATS="${DATASET_STATS:-/root/autodl-fs/ckpts/fast_wam/runs/pangceban_uncond_2cam224_1e-4/2026-06-11_08-24-59/dataset_stats.json}"
+# CKPT="${CKPT:-/root/autodl-fs/ckpts/fast_wam/runs/pangceban_uncond_2cam224_1e-4/2026-06-11_08-24-59/checkpoints/weights/step_024000.pt}"
+# DATASET_STATS="${DATASET_STATS:-/root/autodl-fs/ckpts/fast_wam/runs/pangceban_uncond_2cam224_1e-4/2026-06-11_08-24-59/dataset_stats.json}"
 
 # random all checkpoint
 # CKPT="${CKPT:-/root/autodl-fs/ckpts/fast_wam/runs/pangceban_uncond_2cam224_1e-4/2026-06-13_07-18-52/checkpoints/weights/step_020000.pt}"
 # DATASET_STATS="${DATASET_STATS:-/root/autodl-fs/ckpts/fast_wam/runs/pangceban_uncond_2cam224_1e-4/2026-06-13_07-18-52/dataset_stats.json}"
 # random dit checkpoint
-# CKPT="${CKPT:-/root/autodl-fs/ckpts/fast_wam/runs/pangceban_uncond_2cam224_1e-4/2026-06-13_16-09-09/checkpoints/weights/step_020000.pt}"
-# DATASET_STATS="${DATASET_STATS:-/root/autodl-fs/ckpts/fast_wam/runs/pangceban_uncond_2cam224_1e-4/2026-06-13_16-09-09/dataset_stats.json}"
+CKPT="${CKPT:-/root/autodl-fs/ckpts/fast_wam/runs/pangceban_uncond_2cam224_1e-4/2026-06-13_16-09-09/checkpoints/weights/step_020000.pt}"
+DATASET_STATS="${DATASET_STATS:-/root/autodl-fs/ckpts/fast_wam/runs/pangceban_uncond_2cam224_1e-4/2026-06-13_16-09-09/dataset_stats.json}"
 
 TASK="${TASK:-pangceban_uncond_2cam224_1e-4}"
 DEVICE="${DEVICE:-cuda}"
@@ -43,4 +43,4 @@ python scripts/policy_server.py \
     --port "${PORT}" \
     --host "${HOST}" \
     --infer_mode joint \
-    --replan_steps 10 
+    --replan_steps 7 
