@@ -38,7 +38,7 @@ train:
   is_training_set: true
   skip_padding_as_possible: false
   concat_multi_camera: "lerobot"
-  pretrained_norm_stats: null
+  pretrained_norm_stats: /root/foresee/FastWAM/configs/paomo_dataset_stats.json
   processor:
     _target_: fastwam.datasets.lerobot.processors.fastwam_processor.FastWAMProcessor
     shape_meta: ${data.train.shape_meta}
