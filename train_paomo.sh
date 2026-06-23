@@ -7,7 +7,7 @@ accelerate launch \
   --num_processes 6 \
   scripts/train.py \
   task=paomo_uncond_2cam224_1e-4 batch_size=20 num_workers=12 \
-  log_every=1 eval_every=999999 save_every=999999 \
+  log_every=10 eval_every=999999 save_every=100 \
   seed=42 wandb.enabled=true
   # ++encode_overlap=true ++encode_prefetch_factor=4 \
   # ++dataloader_persistent_workers=true \
