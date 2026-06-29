@@ -133,7 +133,9 @@ class SingleFieldLinearNormalizer:
         return x
 
 # STATS_FILE = "/root/autodl-fs/datasets/pangceban_left_right_data_20260602_658_delta_action/meta/stats.json"
-STATS_FILE = "/root/autodl-fs/datasets/merged_paomo_0526_0601_580_delta_action/meta/stats.json"
+# STATS_FILE = "/root/autodl-fs/datasets/merged_paomo_0526_0601_580_delta_action/meta/stats.json"
+
+STATS_FILE="/root/autodl-fs/datasets/pangceban_left_right_data_20260629_738_v2_delta_action/meta/stats.json"
 
 
 class CustomActionFieldNormalizer:

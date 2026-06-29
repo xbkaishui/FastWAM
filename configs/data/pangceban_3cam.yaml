@@ -1,7 +1,8 @@
 train:
   _target_: fastwam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
   dataset_dirs:
-    - /root/autodl-fs/datasets/pangceban_left_right_data_20260602_658_delta_action
+    # - /root/autodl-fs/datasets/pangceban_left_right_data_20260602_658_delta_action
+    - /root/autodl-fs/datasets/pangceban_left_right_data_20260629_738_v2_delta_action
   shape_meta:
     images:
       - key: head_left
@@ -38,7 +39,7 @@ train:
   is_training_set: true
   skip_padding_as_possible: false
   concat_multi_camera: "lerobot"
-  pretrained_norm_stats: /root/foresee/FastWAM/configs/pangceban_dataset_stats.json
+  pretrained_norm_stats: /root/foresee/FastWAM/configs/pangceban_dataset_stats_0629.json
   processor:
     _target_: fastwam.datasets.lerobot.processors.fastwam_processor.FastWAMProcessor
     shape_meta: ${data.train.shape_meta}
